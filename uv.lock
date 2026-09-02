@@ -3699,7 +3699,7 @@ wheels = [
 
 [[package]]
 name = "scqat"
-version = "0.21.0"
+version = "0.23.0"
 source = { editable = "../scqat" }
 dependencies = [
     { name = "lmfit" },
@@ -3733,7 +3733,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "scqo"
-version = "3.3.0"
+version = "3.8.0"
 source = { editable = "../SCQO" }
 dependencies = [
     { name = "netcdf4", version = "1.7.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and platform_machine == 'ARM64' and sys_platform == 'win32'" },
@@ -3773,7 +3773,7 @@ dev = [
 
 [[package]]
 name = "scqo-qm"
-version = "3.3.0"
+version = "3.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "lmfit" },
