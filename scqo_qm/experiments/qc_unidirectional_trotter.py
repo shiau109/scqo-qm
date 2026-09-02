@@ -66,6 +66,7 @@ from qualang_tools.loops import from_array
 
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
+from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
 
 def _dedup_involved(measure_qubits, pairs, extra) -> List:
@@ -117,6 +118,8 @@ def build_program(
     reset_type: str,
     keep_shots: bool,
     operation_gap_ns: int = 0,
+    first_coupler_amp: Optional[float] = None,
+    second_coupler_amp: Optional[float] = None,
     simulate: bool = False,
 ):
     """Build the unidirectional-Trotter-chain QUA program.
@@ -168,6 +171,17 @@ def build_program(
     check_amp_scale_window([factor for _q, factor in compensation],
                            name="stark compensation",
                            knob="compensation_amps")
+    # The swap ANGLE knob, when a run sets it: the coupler pulse must exist and
+    # be turnable (baked at zero it is not), and the port must be able to emit
+    # the volts. A pair left at None plays its baked coupler amplitude and is
+    # not checked, because nothing is being asked of it.
+    for pair, amp in ((first_pair, first_coupler_amp),
+                      (second_pair, second_coupler_amp)):
+        if amp is not None:
+            guard_coupler_amplitudes(
+                pair, swap_operation, [float(amp)],
+                why="swap_coupler_flux sets the swap angle through the coupler.",
+                label=f"{pair.name} swap_coupler_flux")
 
     involved = _dedup_involved(measure_qubits, [first_pair, second_pair],
                                [reset_qubit, prep_qubit])
@@ -177,6 +191,11 @@ def build_program(
                for qubit, _factor in compensation}
     stark_if = {name: int(stark_detuning_hz) + value
                 for name, value in base_if.items()}
+
+    first_swap_kwargs = ({} if first_coupler_amp is None
+                         else {"cplr_amp": float(first_coupler_amp)})
+    second_swap_kwargs = ({} if second_coupler_amp is None
+                          else {"cplr_amp": float(second_coupler_amp)})
 
     axes: Dict[str, xr.DataArray] = {
         "qubit": xr.DataArray([q.name for q in measure_qubits]),
@@ -226,11 +245,14 @@ def build_program(
                 # The Trotter step, N times. A dynamic loop bound on r means
                 # N=0 skips the body entirely (the prep-only baseline).
                 with for_(rr, 0, rr < r, rr + 1):
-                    first_pair.macros[swap_operation].apply()
+                    # A pair named in swap_coupler_flux is driven at that coupler
+                    # amplitude (the angle knob); one that is not plays bare, so
+                    # the default {} is byte-for-byte the pre-existing sequence.
+                    first_pair.macros[swap_operation].apply(**first_swap_kwargs)
                     if gap_cycles > 0:
                         first_pair.wait(gap_cycles)
                     align()
-                    second_pair.macros[swap_operation].apply()
+                    second_pair.macros[swap_operation].apply(**second_swap_kwargs)
                     if gap_cycles > 0:
                         second_pair.wait(gap_cycles)
                     align()
@@ -315,6 +337,9 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
             (vendor_qubit(self, name, field="compensation_amps"), float(factor))
             for name, factor in self.params.compensation_amps.items()
         ]
+        # keyed by PAIR name in scqo's surface; scqo's chain_roles has already
+        # refused any name that is not one of the two declared pairs.
+        coupler_flux = dict(self.params.swap_coupler_flux or {})
         return build_program(
             machine,
             measure_qubits,
@@ -332,6 +357,8 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
             stark_operation=self.params.stark_operation,
             stark_detuning_hz=self.params.stark_detuning_hz,
             compensation=compensation,
+            first_coupler_amp=coupler_flux.get(self.params.first_pair),
+            second_coupler_amp=coupler_flux.get(self.params.second_pair),
             rounds_array=np.asarray(self.sweep_axes["round_count"]).astype(int),
             num_shots=int(self.params.num_averages),
             reset_type=reset,

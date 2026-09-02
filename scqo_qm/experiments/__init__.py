@@ -25,10 +25,12 @@ if not any(getattr(_h, "stream", None) is _sys.stderr for _h in _qm_logger.handl
 
 from . import crosstalk_compensated_sqrb  # noqa: F401  (import side effect: @register)
 from . import pair_swap_chevron  # noqa: F401  (import side effect: @register)
+from . import pair_swap_angle  # noqa: F401  (import side effect: @register)
 from . import pair_swap_flux_map  # noqa: F401  (import side effect: @register)
 from . import pair_zz_coupler  # noqa: F401  (import side effect: @register)
 from . import qc_n_stark_amp  # noqa: F401  (import side effect: @register)
 from . import qc_n_swap_amp  # noqa: F401  (import side effect: @register)
+from . import qc_trotter_compensation  # noqa: F401  (import side effect: @register)
 from . import qc_unidirectional_trotter  # noqa: F401  (import side effect: @register)
 from . import qubit_ramsey_cryoscope  # noqa: F401  (import side effect: @register)
 from . import qubit_deterministic_benchmarking  # noqa: F401  (import side effect: @register)

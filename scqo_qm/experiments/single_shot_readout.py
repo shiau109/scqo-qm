@@ -65,7 +65,9 @@ class QMSingleShotReadout(SingleShotReadout):
 
         The rotation field is ABSOLUTE: the measured ``delta`` is relative to the
         current weights rotation, so the proposal is ``current - delta`` (the field's
-        current value seeded from the vendor in pull mode)."""
+        current value seeded from the vendor in pull mode). An UNSET rotation reads
+        as 0.0 — the honest baseline for a channel whose discriminator has never been
+        calibrated, which is precisely when this runs first."""
         super().update()  # fidelity_g/e + pos_* monitors (through self.device)
 
         if self.result is None or self.dataset is None:
@@ -91,7 +93,13 @@ class QMSingleShotReadout(SingleShotReadout):
             # (q1_ro), addressed by its target's default channel — the qubit
             # MODE name carries no knobs since the greenfield split.
             view = self.device.channel(qubit, "readout")
-            current = float(view.readout_rotation_rad)
+            # An UNSET rotation means no rotation has been applied yet, so the
+            # absolute baseline is 0.0 — not an error. It is the normal state of a
+            # channel whose discriminator has never been calibrated, which is
+            # exactly when the first single-shot readout runs; floating None
+            # crashed update() there and cost the run its whole suggestion set.
+            stored = view.readout_rotation_rad
+            current = 0.0 if stored is None else float(stored)
             new_rotation = current - d["delta_angle_rad"]  # accumulate as an absolute proposal
             view.readout_rotation_rad = new_rotation
             view.readout_threshold = d["ge_threshold"]

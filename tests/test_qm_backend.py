@@ -638,6 +638,46 @@ def test_preview_writes_qua_script(machine, live_roster, tmp_path,
     assert len(text.splitlines()) > 20  # a real program body, not just header
 
 
+def test_tomography_preview_renders_through_the_hook(machine, live_roster,
+                                                     tmp_path, monkeypatch):
+    """A NORMAL (non-self-acquiring) shell's ``preview_program()`` is what the
+    preview renders — the dispatch is 'has a hook', not 'is self-acquiring'.
+
+    ``qubit_tomography``'s hook omits the training shots, so the proof is in the
+    dumped script: the real ``probe()`` build saves I_train/Q_train streams and
+    the previewed one does not. Multi-target on purpose — the single-target gate
+    constrains self-acquiring shells only.
+    """
+    import socket
+
+    from conftest import make_experiment
+    from scqo_qm.experiments.qubit_tomography import QMQubitTomography
+
+    monkeypatch.setattr(socket, "create_connection",
+                        lambda *a, **k: pytest.fail(
+                            "no_simulate must never touch the network"))
+    qubits_names = list(machine.qubits.keys())[:2]
+    backend = QMBackend(machine, roster=live_roster)
+    exp = make_experiment(
+        QMQubitTomography, backend, live_roster,
+        QMQubitTomography.Parameters(targets=qubits_names, num_averages=10,
+                                     num_training_shots=100))
+    exp.sweep_axes = exp.define_sweep()
+
+    files = backend.preview(exp, tmp_path / "prev", no_simulate=True)
+    text = files[0].read_text(encoding="utf-8")
+    assert "I_tomo1" in text          # the measurement itself is still rendered
+    assert "I_train1" not in text     # ... without the training shots
+    assert "Q_train1" not in text
+
+    # and the ordinary probe() build DOES carry them, so the absence above is
+    # the hook's doing rather than a property of the experiment
+    from qm import generate_qua_script
+
+    prog, _axes, _acquire = exp.probe()
+    assert "I_train1" in generate_qua_script(prog, machine.generate_config())
+
+
 def test_stark_amp_single_target_preview_builds(machine, live_roster, tmp_path,
                                                 monkeypatch):
     """A self-acquiring pair shell (qc_n_stark_amp) is previewable with EXACTLY

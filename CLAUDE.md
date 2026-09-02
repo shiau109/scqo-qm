@@ -35,6 +35,9 @@ scqo_qm/
     apply_distortion.py  # operator CLI: python -m scqo_qm.backend.apply_distortion
                          #   (QMBackend.distortion_apply_command hands scqo's two
                          #   cryoscopes this command line as their writeback hint)
+    close_qm.py          # operator CLI: python -m scqo_qm.backend.close_qm - halt
+                         #   jobs + close open QMs when a dead session still holds
+                         #   the cluster's locks (QMBackend.close_qm does the work)
   experiments/
     __init__.py          # one import line per experiment module so @register runs (manual;
                          #   tests/test_experiment_registration.py enforces completeness both
@@ -237,6 +240,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 | `test_preview.py` | the probe_self_acquires census + preview refusal ordering | no |
 | `test_qc_populations.py`, `test_pair_swap_probes.py`, `test_parity_switch_shell.py`, `test_t1_tracking_shells.py`, `test_ramsey_cryoscope_probe.py`, `test_spectroscopy_cryoscope_probe.py` | pure builder math, param mapping, AST properties of the fused modules | no |
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
+| `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview | yes |
 | `test_overlap_probe.py` | concurrent-tone timing asserted on generated QUA (quote-agnostic vs qm versions) | yes |

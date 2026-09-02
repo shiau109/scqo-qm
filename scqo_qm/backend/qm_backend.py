@@ -77,6 +77,13 @@ def _preview_refusal(experiment) -> "str | None":
     self-acquires is refused; a normal build-and-return shell is never refused.
     Returns the refusal DETAIL (the backend prepends the experiment name + the
     shell's own reason); ``None`` means previewable.
+
+    ``preview_program()`` is NOT only a self-acquiring shell's escape hatch: ANY
+    shell may expose it to render something cheaper than what ``probe()`` builds
+    (``qubit_tomography`` drops its training shots that way). The single-target
+    rule above is a constraint on SELF-ACQUIRING shells specifically — a normal
+    shell's hook is used whatever the target count, because its ``probe()`` was
+    a legal fallback to begin with.
     """
     if not getattr(type(experiment), SELF_ACQUIRING_ATTR, None):
         return None
@@ -1151,7 +1158,10 @@ class QMBackend(Backend):
                 f"{name} cannot be previewed on the QM backend: {reason} — {refusal}")
         check_reset_method(experiment)  # same backstop as acquire()
         with self._thermalization_override(experiment):
-            if reason:  # single-target self-acquiring (gate passed): build the one program
+            # Any shell exposing the hook renders through it — a self-acquiring one
+            # because it has no other standalone program (the gate above passed), a
+            # normal one because its hook is the cheaper build of the same sequence.
+            if hasattr(experiment, "preview_program"):
                 prog = experiment.preview_program()
             else:
                 res = experiment.probe()
@@ -1286,6 +1296,108 @@ class QMBackend(Backend):
         waveforms = out_dir / "simulated_waveforms.html"
         fig.write_html(str(waveforms))
         return waveforms
+
+    def close_qm(self, *, qm_id: str | None = None) -> dict[str, Any]:
+        """Halt running jobs and close open Quantum Machines on the cluster.
+
+        The recovery door for a cluster whose hardware locks are held by a
+        crashed or abandoned session — the state that otherwise shows up as a
+        job stalling forever, or an open that never returns. Driven by the
+        operator CLI :mod:`scqo_qm.backend.close_qm`, which is where the
+        vendor-facing command lives (scqo's neutral core has no ``close_qm``:
+        the command needs the vendor libraries, so it lives with them).
+
+        BEST-EFFORT BY DESIGN, and the one place in this backend where blanket
+        exception capture is right: every step is an independent cleanup on a
+        cluster that is, by hypothesis, already misbehaving, so a QM that
+        refuses to close must not stop the next one from closing. A failure is
+        RECORDED in ``errors`` and the sweep continues. The report is the
+        result — read ``success``, never the absence of a raise.
+
+        Opens its own manager through ``self._machine.connect()`` and closes it
+        again, exactly as :meth:`preview`'s simulation path does. Safe because
+        ``QMBackend`` never caches a manager: nothing else holds this one.
+        """
+        qmm = self._machine.connect()
+        open_qms: list[str] = []
+        errors: list[str] = []
+
+        for lister in ("list_open_qms", "list_open_quantum_machines"):
+            listing = getattr(qmm, lister, None)
+            if listing is None:
+                continue
+            try:
+                open_qms = [str(q) for q in listing()]
+            except Exception as err:
+                errors.append(f"{lister}: {type(err).__name__}: {err}")
+            break
+
+        halted_jobs: list[str] = []
+        closed_qms: list[str] = []
+
+        for target_id in ([qm_id] if qm_id is not None else list(open_qms)):
+            try:
+                qm = qmm.get_qm(target_id)
+            except Exception as err:
+                errors.append(f"get_qm({target_id}): {type(err).__name__}: {err}")
+                continue
+            if qm is None:
+                errors.append(f"get_qm({target_id}) returned nothing")
+                continue
+
+            job = None
+            try:
+                job = qm.get_running_job()
+            except Exception as err:
+                errors.append(
+                    f"{target_id}: get_running_job: {type(err).__name__}: {err}")
+            if job is not None:
+                job_id = str(getattr(job, "id", job))
+                stopper = getattr(job, "halt", None) or getattr(job, "cancel", None)
+                if stopper is None:
+                    errors.append(f"{target_id}: job {job_id} has no halt/cancel")
+                else:
+                    try:
+                        stopper()
+                        halted_jobs.append(job_id)
+                    except Exception as err:
+                        errors.append(f"{target_id}: halting job {job_id}: "
+                                      f"{type(err).__name__}: {err}")
+            try:
+                qm.close()
+                closed_qms.append(str(target_id))
+            except Exception as err:
+                errors.append(f"{target_id}: close: {type(err).__name__}: {err}")
+
+        # The whole-cluster sweep also releases what the listing missed (a QM
+        # opened by a process that died before registering, say). Skipped for a
+        # targeted --qm-id, which must not touch its neighbours.
+        if qm_id is None:
+            for closer in ("close_all_qms", "close_all_quantum_machines"):
+                close_all = getattr(qmm, closer, None)
+                if close_all is None:
+                    continue
+                try:
+                    close_all()
+                except Exception as err:
+                    errors.append(f"{closer}: {type(err).__name__}: {err}")
+                break
+
+        close_manager = getattr(qmm, "close", None)
+        if close_manager is not None:
+            try:
+                close_manager()
+            except Exception as err:
+                errors.append(f"closing the manager: {type(err).__name__}: {err}")
+
+        return {
+            "success": not errors,
+            "backend": "qm",
+            "open_qms": open_qms,
+            "halted_jobs": halted_jobs,
+            "closed_qms": closed_qms,
+            "errors": errors,
+        }
 
     @staticmethod
     def _to_canonical(raw: xr.Dataset, experiment: "Experiment") -> xr.Dataset:

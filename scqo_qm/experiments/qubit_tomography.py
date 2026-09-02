@@ -67,29 +67,52 @@ def get_op_cycles(qubit, op_name: str = "x180", default_cycles: int = 10) -> int
     return default_cycles
 
 
-def play_target_gate(qubit, gate_str: str):
-    """Play target gate pulse once."""
+def play_target_gate(qubit, gate_str: str, amp_scale: float = 1.0):
+    """Play target gate pulse once with optional amplitude scaling."""
     gt = str(gate_str).strip().lower()
     if gt in ("i", "id"):
         cycles = get_op_cycles(qubit, "x180")
         wait(cycles, qubit.xy.name)
-    elif gt in ("x", "x180"):
-        play("x180", qubit.xy.name)
+        return
+
+    if gt in ("x", "x180"):
+        op = "x180"
     elif gt in ("x90", "x/2"):
-        play("x90", qubit.xy.name)
+        op = "x90"
     elif gt in ("y", "y180"):
-        play("y180", qubit.xy.name)
+        op = "y180"
     elif gt in ("y90", "y/2"):
-        play("y90", qubit.xy.name)
+        op = "y90"
     elif gt in ("-x90", "-x/2"):
-        play("-x90", qubit.xy.name)
+        op = "-x90"
     elif gt in ("-y90", "-y/2"):
-        play("-y90", qubit.xy.name)
+        op = "-y90"
     else:
         raise ValueError(
             f"Unsupported target gate '{gate_str}'. "
             "Supported gates are: 'i', 'id', 'x', 'x180', 'x90', 'x/2', 'y', 'y180', 'y90', 'y/2', '-x90', '-y90'."
         )
+
+    if amp_scale is not None and abs(float(amp_scale) - 1.0) > 1e-6:
+        play(op * amp(float(amp_scale)), qubit.xy.name)
+    else:
+        play(op, qubit.xy.name)
+
+
+def get_qubit_freq_tuning(qubit, q_cfg: dict) -> tuple[int | None, int | None]:
+    """Returns (target_if, base_if) if frequency tuning is requested, else (None, None)."""
+    detuning = q_cfg.get("detuning", q_cfg.get("frequency_detuning", q_cfg.get("frequency_shift", None)))
+    direct_freq = q_cfg.get("intermediate_frequency", q_cfg.get("frequency", None))
+    base_if = getattr(getattr(qubit, "xy", None), "intermediate_frequency", None)
+    if base_if is not None:
+        base_if = int(base_if)
+
+    if detuning is not None and float(detuning) != 0.0:
+        if base_if is not None:
+            return int(base_if + float(detuning)), base_if
+    elif direct_freq is not None:
+        return int(float(direct_freq)), base_if
+    return None, base_if
 
 
 def play_basis_rotation(qubit, basis_str: str):
@@ -119,6 +142,7 @@ def build_program(
     symmetrized_readout: bool = True,
     reset_type: str = "thermal",
     simulate: bool = False,
+    include_training: bool = True,
     log: Optional[Callable] = None,
 ):
     """Build the Qubit Tomography QUA program.
@@ -163,54 +187,66 @@ def build_program(
 
     with program() as prog:
         I, I_st, Q, Q_st, n, n_st = machine.declare_qua_variables()
-        I_tr, I_tr_st, Q_tr, Q_tr_st, n_tr, n_tr_st = machine.declare_qua_variables()
+        if include_training and num_training_shots > 0:
+            I_tr, I_tr_st, Q_tr, Q_tr_st, n_tr, n_tr_st = machine.declare_qua_variables()
 
         nc_idx = declare(int)
         b_idx = declare(int)
         s_idx = declare(int)
         gc_idx = declare(int)
         rep = declare(int)
-        ps_idx = declare(int)
+        if include_training and num_training_shots > 0:
+            ps_idx = declare(int)
 
         for multiplexed_qubits in qubits.batch():
             for qubit in multiplexed_qubits.values():
                 machine.initialize_qpu(target=qubit)
-            align()
+
+            all_elem_names = [q.xy.name for q in multiplexed_qubits.values()] + [
+                q.resonator.name for q in multiplexed_qubits.values()
+            ]
 
             # 1. Training Shots
-            with for_(n_tr, 0, n_tr < num_training_shots, n_tr + 1):
-                save(n_tr, n_tr_st)
-                with for_each_(ps_idx, [0, 1]):
-                    for i_q, qubit in multiplexed_qubits.items():
-                        qubit.reset(reset_type, simulate, log_callable=log)
-                    align()
-                    for i_q, qubit in multiplexed_qubits.items():
-                        reset_frame(qubit.xy.name)
+            if include_training and num_training_shots > 0:
+                with for_(n_tr, 0, n_tr < num_training_shots, n_tr + 1):
+                    save(n_tr, n_tr_st)
+                    with for_each_(ps_idx, [0, 1]):
+                        for i_q, qubit in multiplexed_qubits.items():
+                            qubit.reset(reset_type, simulate, log_callable=log)
+                        align(*all_elem_names)
+                        for i_q, qubit in multiplexed_qubits.items():
+                            reset_frame(qubit.xy.name)
+                            reset_if_phase(qubit.xy.name)
+                        try:
+                            reset_global_phase()
+                        except Exception:
+                            pass
+                        align(*all_elem_names)
 
-                    for i_q, qubit in multiplexed_qubits.items():
-                        q_name = qubit_names[i_q]
-                        q_cfg = qubit_configs.get(q_name, {})
-                        noise_mode = bool(q_cfg.get("noise_mode", False))
-                        if not noise_mode:
-                            with if_(ps_idx == 1):
-                                play("x180", qubit.xy.name)
-                    align()
+                        for i_q, qubit in multiplexed_qubits.items():
+                            q_name = qubit_names[i_q]
+                            q_cfg = qubit_configs.get(q_name, {})
+                            noise_mode = bool(q_cfg.get("noise_mode", False))
+                            if not noise_mode:
+                                with if_(ps_idx == 1):
+                                    play("x180", qubit.xy.name)
+                        align(*all_elem_names)
 
-                    for i_q, qubit in multiplexed_qubits.items():
-                        q_name = qubit_names[i_q]
-                        q_cfg = qubit_configs.get(q_name, {})
-                        noise_mode = bool(q_cfg.get("noise_mode", False))
+                        for i_q, qubit in multiplexed_qubits.items():
+                            q_name = qubit_names[i_q]
+                            q_cfg = qubit_configs.get(q_name, {})
+                            noise_mode = bool(q_cfg.get("noise_mode", False))
 
-                        if not noise_mode:
-                            qubit.resonator.measure("readout", qua_vars=(I_tr[i_q], Q_tr[i_q]))
-                            save(I_tr[i_q], I_tr_st[i_q])
-                            save(Q_tr[i_q], Q_tr_st[i_q])
-                        else:
-                            assign(I_tr[i_q], 0.0)
-                            assign(Q_tr[i_q], 0.0)
-                            save(I_tr[i_q], I_tr_st[i_q])
-                            save(Q_tr[i_q], Q_tr_st[i_q])
-                    align()
+                            if not noise_mode:
+                                qubit.resonator.measure("readout", qua_vars=(I_tr[i_q], Q_tr[i_q]))
+                                save(I_tr[i_q], I_tr_st[i_q])
+                                save(Q_tr[i_q], Q_tr_st[i_q])
+                            else:
+                                assign(I_tr[i_q], 0.0)
+                                assign(Q_tr[i_q], 0.0)
+                                save(I_tr[i_q], I_tr_st[i_q])
+                                save(Q_tr[i_q], Q_tr_st[i_q])
+                        align(*all_elem_names)
 
             # 2. Tomography Shots (Interleaved Noise and Baseline)
             with for_(n, 0, n < num_shots, n + 1):
@@ -222,9 +258,15 @@ def build_program(
                                 # Reset
                                 for i_q, qubit in multiplexed_qubits.items():
                                     qubit.reset(reset_type, simulate, log_callable=log)
-                                align()
+                                align(*all_elem_names)
                                 for i_q, qubit in multiplexed_qubits.items():
                                     reset_frame(qubit.xy.name)
+                                    reset_if_phase(qubit.xy.name)
+                                try:
+                                    reset_global_phase()
+                                except Exception:
+                                    pass
+                                align(*all_elem_names)
 
                                 # Phase 1: Init State (all qubits simultaneously, noise_mode qubits skipped)
                                 for i_q, qubit in multiplexed_qubits.items():
@@ -234,43 +276,72 @@ def build_program(
                                     if not noise_mode:
                                         init_st = q_cfg.get("init_state", "0")
                                         play_init_state(qubit, init_st)
-                                align()
+                                align(*all_elem_names)
 
-                                # Phase 2: Target Gate (with symmetric idle wait for noise OFF)
-                                with for_(rep, 0, rep < gc_idx, rep + 1):
-                                    for i_q, qubit in multiplexed_qubits.items():
-                                        q_name = qubit_names[i_q]
-                                        q_cfg = qubit_configs.get(q_name, {})
-                                        tgt_gt = q_cfg.get("target_gate", "X180")
-                                        noise_mode = bool(q_cfg.get("noise_mode", False))
-                                        if not noise_mode:
-                                            play_target_gate(qubit, tgt_gt)
-                                        else:
-                                            if len(noise_conditions) > 1:
-                                                with if_(nc_idx == 0):
-                                                    cycles = get_op_cycles(qubit, tgt_gt)
-                                                    wait(cycles, qubit.xy.name)
-                                                with else_():
-                                                    play_target_gate(qubit, tgt_gt)
-                                            else:
-                                                play_target_gate(qubit, tgt_gt)
-                                    align()
-
-                                # Phase 3: Basis Rotation (all qubits simultaneously)
+                                # Phase 2: Target Gate (unrolled via switch_ and aligned across all qubits)
+                                # Apply frequency tuning before target gates if specified
                                 for i_q, qubit in multiplexed_qubits.items():
                                     q_name = qubit_names[i_q]
                                     q_cfg = qubit_configs.get(q_name, {})
-                                    noise_mode = bool(q_cfg.get("noise_mode", False))
-                                    if not noise_mode:
-                                        with if_(b_idx == 0):
-                                            play_basis_rotation(qubit, "z")
-                                        with elif_(b_idx == 1):
-                                            play_basis_rotation(qubit, "x")
-                                        with else_():
-                                            play_basis_rotation(qubit, "y")
-                                        with if_(s_idx == 1):
-                                            play("x180", qubit.xy.name)
-                                align()
+                                    tgt_if, _ = get_qubit_freq_tuning(qubit, q_cfg)
+                                    if tgt_if is not None:
+                                        update_frequency(qubit.xy.name, tgt_if)
+
+                                with switch_(gc_idx):
+                                    for gc in gate_counts:
+                                        gc_int = int(gc)
+                                        with case_(gc_int):
+                                            for i_q, qubit in multiplexed_qubits.items():
+                                                q_name = qubit_names[i_q]
+                                                q_cfg = qubit_configs.get(q_name, {})
+                                                tgt_gt = q_cfg.get("target_gate", "X180")
+                                                amp_sc = float(q_cfg.get("amp", q_cfg.get("amp_scale", 1.0)))
+                                                noise_mode = bool(q_cfg.get("noise_mode", False))
+
+                                                if not noise_mode:
+                                                    for _ in range(gc_int):
+                                                        play_target_gate(qubit, tgt_gt, amp_scale=amp_sc)
+                                                else:
+                                                    if len(noise_conditions) > 1 and gc_int > 0:
+                                                        with if_(nc_idx == 1):
+                                                            for _ in range(gc_int):
+                                                                play_target_gate(qubit, tgt_gt, amp_scale=amp_sc)
+                                                        with else_():
+                                                            cycles = get_op_cycles(qubit, tgt_gt) * gc_int
+                                                            if cycles > 0:
+                                                                wait(cycles, qubit.xy.name)
+                                                    elif gc_int > 0:
+                                                        for _ in range(gc_int):
+                                                            play_target_gate(qubit, tgt_gt, amp_scale=amp_sc)
+
+                                # Restore base frequency if frequency tuning was applied
+                                for i_q, qubit in multiplexed_qubits.items():
+                                    q_name = qubit_names[i_q]
+                                    q_cfg = qubit_configs.get(q_name, {})
+                                    tgt_if, base_if = get_qubit_freq_tuning(qubit, q_cfg)
+                                    if tgt_if is not None and base_if is not None:
+                                        update_frequency(qubit.xy.name, base_if)
+
+                                # Phase 3: Basis Rotation (all active qubits played concurrently per basis)
+                                with switch_(b_idx):
+                                    with case_(0):
+                                        pass
+                                    with case_(1):
+                                        for i_q, qubit in multiplexed_qubits.items():
+                                            if not bool(qubit_configs.get(qubit_names[i_q], {}).get("noise_mode", False)):
+                                                play_basis_rotation(qubit, "x")
+                                    with case_(2):
+                                        for i_q, qubit in multiplexed_qubits.items():
+                                            if not bool(qubit_configs.get(qubit_names[i_q], {}).get("noise_mode", False)):
+                                                play_basis_rotation(qubit, "y")
+
+                                if symmetrized_readout:
+                                    with if_(s_idx == 1):
+                                        for i_q, qubit in multiplexed_qubits.items():
+                                            if not bool(qubit_configs.get(qubit_names[i_q], {}).get("noise_mode", False)):
+                                                play("x180", qubit.xy.name)
+
+                                align(*all_elem_names)
 
                                 # Measurement (noise_mode qubits save dummy zeros)
                                 for i_q, qubit in multiplexed_qubits.items():
@@ -287,15 +358,17 @@ def build_program(
                                         assign(Q[i_q], 0.0)
                                         save(I[i_q], I_st[i_q])
                                         save(Q[i_q], Q_st[i_q])
-                                align()
+                                align(*all_elem_names)
 
         with stream_processing():
             n_st.save("n")
-            n_tr_st.save("n_tr")
-            for i_q in range(num_qubits):
-                I_tr_st[i_q].buffer(2).buffer(num_training_shots).save(f"I_train{i_q + 1}")
-                Q_tr_st[i_q].buffer(2).buffer(num_training_shots).save(f"Q_train{i_q + 1}")
+            if include_training and num_training_shots > 0:
+                n_tr_st.save("n_tr")
+                for i_q in range(num_qubits):
+                    I_tr_st[i_q].buffer(2).buffer(num_training_shots).save(f"I_train{i_q + 1}")
+                    Q_tr_st[i_q].buffer(2).buffer(num_training_shots).save(f"Q_train{i_q + 1}")
 
+            for i_q in range(num_qubits):
                 I_st[i_q].buffer(len(gate_counts)).buffer(len(sym_indices)).buffer(3).buffer(len(noise_conditions)).buffer(num_shots).save(f"I_tomo{i_q + 1}")
                 Q_st[i_q].buffer(len(gate_counts)).buffer(len(sym_indices)).buffer(3).buffer(len(noise_conditions)).buffer(num_shots).save(f"Q_tomo{i_q + 1}")
 
@@ -420,6 +493,29 @@ from scqo.experiments import QubitTomography
 @register
 class QMQubitTomography(QubitTomography):
     """Build a multiplexed qubit tomography QUA program on the QM OPX."""
+
+    def preview_program(self) -> Any:
+        """The ``--preview`` build: omits training shots and skips thermal wait."""
+        from ._reset import check_reset_method
+        from scqo_qm.experiments._lib import select_qubits
+
+        machine = self.backend.machine
+        qubits = select_qubits(machine, self.params.targets, multiplexed=True)
+
+        prog, _sweep_axes = build_program(
+            machine,
+            qubits,
+            qubit_configs=self.params.qubit_configs,
+            gate_counts=list(self.params.gate_counts),
+            num_shots=int(self.params.num_averages),
+            num_training_shots=0,
+            interleave_noise=getattr(self.params, "interleave_noise", True),
+            symmetrized_readout=self.params.symmetrized_readout,
+            reset_type=check_reset_method(self),
+            simulate=True,
+            include_training=False,
+        )
+        return prog
 
     def probe(self) -> Any:
         from ._reset import check_reset_method
