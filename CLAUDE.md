@@ -63,7 +63,9 @@ scqo_qm/
                          #   ALSO persisted as __class__ in state.json)
 quam_config/             # QUAM class entrypoint (my_quam.py: Quam(MixedTransmonQuam)) + the
                          #   register_* scripts that materialize lab operations into a state
-quam_state/              # serialized instrument config (state.json/wiring.json; gitignored)
+quam_state/              # serialized instrument config (state.json/wiring.json; gitignored);
+                         #   every scqo run snapshots the IN-MEMORY tree the same way
+                         #   (QMBackend.vendor_config_snapshot -> <device>/setup_snapshots/)
 calibrations/            # OFFICIAL vendored nodes only + exclude/ (frozen archive)
                          #   + offline_graph/ (manual LCH_graph_* post-processing scripts)
 calibration_utils/       # vendored official support code (regenerate via sync_official.py)
@@ -194,7 +196,12 @@ core-side; only the built-in simulated backend runs push), so this guard is the 
 second line — flipping a device to `"push"` later needs both lifted. **Which QUAM state loads** is decided by the device's cooldown
 setup alone (`<device>/<cycle>/<name>/backend_config/` holding canonical `state.json` +
 `wiring.json`); keep qualibrate's own `[quam] state_path` pointed at the same folder on machines
-running both stacks.
+running both stacks. Every run additionally records a **setup snapshot** of the tree it executed
+against (`QMBackend.vendor_config_snapshot`: the in-memory `to_dict()` split exactly as
+`machine.save()` splits it, stored content-addressed under `<device>/setup_snapshots/`);
+`scqo restore` rebuilds one as a new setup, and the manifest's `versions` is what makes the
+persisted `__class__` paths checkable. A run-scoped tree mutation that misses its restore shows
+up as `setup_snapshot.drift` in the run record (and a RuntimeWarning).
 
 ### scqo student surface
 Students use the **`scqo` command** from any directory in `.venv-qm`
@@ -257,7 +264,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
-| `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview | yes |
+| `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |
 | `test_sequential_probe.py` | the BACKEND-PARITY half: qubit_spectroscopy's drive/readout timing in both `readout_overlap` modes, asserted on generated QUA (quote-agnostic vs qm versions) | yes |
 | `test_scqo_glue.py` | the `scqo` CLI works in THIS venv + the qm factory (slowest) | yes |
 | `test_check_real_config.py` | `scripts/check_real_config.py` end-to-end to its PASS line on the live quam_state (subprocess, ~14 s — exit code + final line asserted, never a pipeline fragment) | yes |

@@ -24,9 +24,11 @@ scqo_qm.quam_fields, shared with the qualibrate writebacks).
 
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from contextlib import contextmanager
+from importlib.metadata import version as _dist_version
 from typing import TYPE_CHECKING, Any
 
 import xarray as xr
@@ -136,6 +138,27 @@ def _solve_full_scale(name: str, target: float) -> int:
             f"canonical operating point"
         )
     return int(fs)
+
+
+def split_state_contents(contents: dict, content_mapping: dict[str, str],
+                         default_filename: str) -> dict[str, dict]:
+    """Route a QUAM tree's top-level keys into the files quam's JSONSerialiser
+    would write ({"wiring": "wiring.json", "network": "wiring.json"} on this
+    lab's root); everything unmapped lands in ``default_filename``. Pure: the
+    serialiser's own routing writes inside its loop, so this is the read-only
+    twin the setup snapshot needs. ``contents`` is not modified."""
+    remaining = dict(contents)
+    files: dict[str, dict] = {}
+    for key, fname in content_mapping.items():
+        if key in remaining:
+            files.setdefault(fname, {})[key] = remaining.pop(key)
+    if remaining:
+        files[default_filename] = remaining
+    return files
+
+
+#: the distributions a setup snapshot's manifest records for this backend
+_VERSIONED_DISTRIBUTIONS = ("scqo-qm", "quam", "qm-qua")
 
 
 # ------------------------------------------------------------- channel views
@@ -1003,6 +1026,41 @@ class QMBackend(Backend):
         """
         run = f" --run {run_id}" if run_id else ""
         return f"python -m scqo_qm.backend.apply_distortion --target {target}{run}"
+
+    def vendor_config_snapshot(self) -> dict[str, str]:
+        """The QUAM tree as held in memory, as the files ``machine.save()`` would
+        write: ``{"state.json": text, "wiring.json": text}`` (scqo's setup snapshot,
+        stored per run under ``<device>/setup_snapshots/``).
+
+        Same ``to_dict(include_defaults=...)`` the serialiser resolves, split by its
+        ``content_mapping`` (:func:`split_state_contents`), dumped with the same
+        ``indent=4, ensure_ascii=False``; LF newlines and a trailing newline, so the
+        text parses equal to the on-disk file (which quam writes CRLF, no trailing
+        newline; in-memory tuples read back as lists). Provenance only: never writes,
+        never touches the instrument, and degrades to ``{}`` on any failure.
+        """
+        try:
+            machine = self._machine
+            ser = machine.serialiser
+            contents = machine.to_dict(include_defaults=ser._resolve_include_defaults())
+            parts = split_state_contents(contents, dict(ser.content_mapping or {}),
+                                         ser.default_filename)
+            return {name: json.dumps(part, indent=4, ensure_ascii=False) + "\n"
+                    for name, part in parts.items()}
+        except Exception:  # provenance must never fail a run
+            return {}
+
+    def versions(self) -> dict[str, str]:
+        """``{distribution: version}`` of this driver and its vendor libs, stamped
+        into the setup snapshot's manifest: a QUAM state names its classes by dotted
+        path, so a later ``scqo restore`` warns when these moved."""
+        out: dict[str, str] = {}
+        for name in _VERSIONED_DISTRIBUTIONS:
+            try:
+                out[name] = _dist_version(name)
+            except Exception:  # not installed here
+                continue
+        return out
 
     def power_context(self, qubits: list[str]) -> dict:
         """Raw readout + drive chain values per qubit (run-record provenance only).

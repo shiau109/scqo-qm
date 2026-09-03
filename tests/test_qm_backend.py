@@ -948,6 +948,52 @@ def test_preview_simulate_ns_cap_refuses(machine, live_roster, tmp_path):
     assert not (tmp_path / "prev").exists()
 
 
+def test_vendor_config_snapshot_matches_the_state_files(machine):
+    """The setup snapshot IS what machine.save() would write: the same split, and
+    parsed-equal to the repo's quam_state files (quam writes CRLF and no trailing
+    newline, and in-memory tuples read back as lists - so compare parsed JSON, not
+    bytes). Deterministic across calls, so the content hash is stable."""
+    import json
+
+    from scqo_qm.backend.qm_backend import QMBackend
+
+    backend = QMBackend(machine, roster=None)
+    snap = backend.vendor_config_snapshot()
+    assert set(snap) == {"state.json", "wiring.json"}
+    state_dir = Path(__file__).resolve().parents[1] / "quam_state"
+    for name, text in snap.items():
+        assert text.endswith("\n") and "\r" not in text
+        assert json.loads(text) == json.loads((state_dir / name).read_text(encoding="utf-8")), name
+    assert set(json.loads(snap["wiring.json"])) == {"wiring", "network"}
+    assert backend.vendor_config_snapshot() == snap  # byte-identical on a second call
+    assert "scqo-qm" in backend.versions()
+
+
+def test_drag_equator_restores_alpha_when_the_build_fails(machine, monkeypatch):
+    """The install/restore of ref_alpha now sits in a try/finally: a failing
+    generate_config() must leave the stored DRAG alphas exactly where they were
+    (a leaked ref_alpha would be persisted by the next machine.save())."""
+    from scqo_qm import quam_fields
+    from scqo_qm.experiments import qubit_drag_equator as drag_equator_probe
+    from scqo_qm.experiments._lib import select_qubits
+
+    names = ["q4", "q5"]
+    qubits = select_qubits(machine, names, multiplexed=True)
+    before = {q: quam_fields.get_drag_beta(machine.qubits[q], operation="x180") for q in names}
+
+    def _boom(self):
+        raise RuntimeError("config generation exploded")
+
+    monkeypatch.setattr(type(machine), "generate_config", _boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        drag_equator_probe.build_program(
+            machine, qubits, num_shots=10, beta_array=[-0.2, 0.0, 0.2],
+            pulse_repetitions=3, reset_type="thermal",
+            use_state_discrimination=False, target_gate="x180")
+    after = {q: quam_fields.get_drag_beta(machine.qubits[q], operation="x180") for q in names}
+    assert after == pytest.approx(before)
+
+
 @pytest.mark.parametrize("gate", ["x180", "x90"])
 def test_gate_target_probes_build_for_both_gates(machine, gate):
     """Issue #24: the drag-equator probe died with a TypeError (stale ``lock_x90``
@@ -1604,3 +1650,29 @@ def test_bayesian_tracking_program_builds_on_live_state(machine, live_roster):
     finally:
         pulse.threshold, pulse.rus_exit_threshold = saved
         qubit.resonator.confusion_matrix = saved_cm
+
+
+# ------------------------------------------------------- setup snapshot (stub)
+
+def test_split_state_contents_routes_mapped_keys():
+    """The pure twin of quam's JSONSerialiser routing: mapped top-level keys go
+    to their file, everything else to the default file; the input is untouched."""
+    from scqo_qm.backend.qm_backend import split_state_contents
+
+    contents = {"qubits": {"q1": 1}, "wiring": {"w": 1}, "network": {"host": "x"},
+                "__class__": "lab.Quam"}
+    mapping = {"wiring": "wiring.json", "network": "wiring.json"}
+    parts = split_state_contents(contents, mapping, "state.json")
+    assert set(parts) == {"state.json", "wiring.json"}
+    assert parts["wiring.json"] == {"wiring": {"w": 1}, "network": {"host": "x"}}
+    assert parts["state.json"] == {"qubits": {"q1": 1}, "__class__": "lab.Quam"}
+    assert set(contents) == {"qubits", "wiring", "network", "__class__"}  # not mutated
+    assert split_state_contents({"a": 1}, {}, "state.json") == {"state.json": {"a": 1}}
+    assert split_state_contents({"wiring": {}}, mapping, "state.json") == {"wiring.json": {"wiring": {}}}
+
+
+def test_vendor_config_snapshot_degrades_on_the_stub(backend):
+    """A tree without a serialiser (the stub) yields no snapshot and never raises
+    - the power_context rule; versions() still names the driver."""
+    assert backend.vendor_config_snapshot() == {}
+    assert "scqo-qm" in backend.versions()
