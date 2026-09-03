@@ -44,7 +44,8 @@ REPO = Path(__file__).resolve().parents[1]
 SHELLS = REPO / "scqo_qm" / "experiments"
 CARRIERS = {"qubit_relaxation", "qubit_ramsey", "qubit_ramsey_phasor",
             "qubit_echo", "qubit_power_rabi",
-            "qubit_t1_ade", "qubit_t1_bayesian"}
+            "qubit_t1_ade", "qubit_t1_bayesian",
+            "qubit_spectroscopy"}
 
 
 def _shell(name, **params):
@@ -105,10 +106,11 @@ def test_thermal_passes_through_unchanged():
 
 
 def test_only_the_named_shells_opt_in():
-    """The census: exactly the six coherent-drive carriers opt in (the four
-    originals plus the two T1 trackers). Widening this set is a hardware-gated
-    decision (a new sequence must be validated on the instrument), so it is
-    pinned here and an addition must edit this line."""
+    """The census: the coherent-drive carriers plus qubit_spectroscopy, whose
+    saturation drive is now a finite pulse — so its reset is a real state reset,
+    and the only thing it sweeps is the DRIVE frequency. Widening this set is a
+    hardware-gated decision (a new sequence must be validated on the instrument),
+    so it is pinned here and an addition must edit this line."""
     from scqo.experiments import get
 
     opted = {n for n in _registered_names()
@@ -149,7 +151,6 @@ def test_no_probe_hardcodes_a_reset_literal():
     "readout_power",            # sweeps the readout amplitude
     "single_shot_readout",      # IS the discriminator calibration
     "single_shot_readout_gef",
-    "qubit_spectroscopy",       # its reset is a driven dwell under a CW drive
     "qubit_sqrb",               # ex-leaker, now refused by name
 ])
 def test_denied_shells_refuse_active_by_name(name):

@@ -95,6 +95,17 @@ A qualibrate node is NOT part of adding an experiment (the GUI serves official n
 
 ## Physics + backend invariants (verified against the working tree)
 
+**Backend parity — the rule lives in `SCQO\CLAUDE.md` (*Backend parity*).** Given one
+Parameters object this driver's `probe()` and the Qblox one must realize the SAME
+sequence: same pulse order, same pulses present, same tones on during acquisition.
+Only vendor idiom may differ (`align()`/`wait()` here against ASAP chaining and
+`rel_time` there). A field description saying the other backend "ignores" a
+parameter is the counter-example, not an exemption — that sentence is what let
+`qubit_spectroscopy` measure a bare line here and a Stark-shifted one on Qblox
+while both wrote the same `drive_freq_hz`. `tests/test_sequential_probe.py` is this
+repo's half of the pin. An OPTIONAL CAPABILITY a backend cannot realize is the
+exception, and must refuse BY NAME (see **Active reset** below).
+
 **Virtual-detuning sign — a SILENT failure.** A probe realizing scqo's `frequency_detuning_hz`
 must ramp the phase **negative on EVERY backend**: the second pi/2's phase has to run BACKWARD
 relative to the free precession of a qubit sitting above its drive, so the observed fringe is
@@ -243,7 +254,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview | yes |
-| `test_overlap_probe.py` | concurrent-tone timing asserted on generated QUA (quote-agnostic vs qm versions) | yes |
+| `test_sequential_probe.py` | the BACKEND-PARITY half: qubit_spectroscopy's drive/readout timing in both `readout_overlap` modes, asserted on generated QUA (quote-agnostic vs qm versions) | yes |
 | `test_scqo_glue.py` | the `scqo` CLI works in THIS venv + the qm factory (slowest) | yes |
 | `test_check_real_config.py` | `scripts/check_real_config.py` end-to-end to its PASS line on the live quam_state (subprocess, ~14 s — exit code + final line asserted, never a pipeline fragment) | yes |
 

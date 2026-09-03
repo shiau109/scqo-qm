@@ -19,19 +19,19 @@ costs ~18.8 us against chipA's ~1.86 ms thermal wait — the ~100x that makes lo
 averaged sweeps affordable. The probes forward ``reset_type`` verbatim to
 ``qubit.reset(...)``; the four carriers additionally forward ``max_attempts``.
 
-WHY ONLY FOUR SHELLS MAY ASK FOR IT. Active reset thresholds every shot against
-the readout discriminator ``single_shot_readout`` solved at ONE readout
-condition, and it replaces the reset with a measurement. So it is valid only
-where the readout condition is frozen for the whole run and the reset is a
-genuine state reset — the four coherent-drive carriers (relaxation, ramsey, echo,
-power_rabi). ``readout_frequency`` / ``readout_power`` SWEEP the readout
-condition; ``single_shot_readout`` IS the calibration itself (and a conditional pi
-driven by the very threshold being measured biases the |1> blob);
-``qubit_spectroscopy`` uses its ``reset`` as a driven dwell under a live CW drive.
-Each of those refuses BY NAME (default DENY via the :data:`ACTIVE_RESET_ATTR`
-ClassVar). Opting a new shell in later is one ``supports_active_reset = True`` and
-one line in the census test — do NOT add it without a reason and hardware
-evidence.
+WHICH SHELLS MAY ASK FOR IT. Active reset thresholds every shot against the
+readout discriminator ``single_shot_readout`` solved at ONE readout condition,
+and it replaces the reset with a measurement. So it is valid exactly where the
+readout condition is frozen for the whole run AND the reset is a genuine state
+reset — the coherent-drive carriers (relaxation, ramsey, echo, power_rabi, the
+two T1 trackers) plus ``qubit_spectroscopy``, whose saturation drive is a finite
+pulse that has ended by the time the reset runs and which sweeps only the DRIVE
+frequency. ``readout_frequency`` / ``readout_power`` SWEEP the readout condition;
+``single_shot_readout`` IS the calibration itself (and a conditional pi driven by
+the very threshold being measured biases the |1> blob). Each of those refuses BY
+NAME (default DENY via the :data:`ACTIVE_RESET_ATTR` ClassVar). Opting a new
+shell in later is one ``supports_active_reset = True`` and one line in the census
+test — do NOT add it without a reason and hardware evidence.
 
 FOUR THINGS ARE LOAD-BEARING here, each a SILENT failure if dropped:
 

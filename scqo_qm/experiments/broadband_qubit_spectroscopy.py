@@ -184,7 +184,7 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
         primary_qubit = machine.qubits[primary_target]
         qubits = select_qubits(machine, targets, multiplexed=True)
         reset_type = check_reset_method(self)
-        operation_len = int(self.params.drive_len_ns) if self.params.drive_len_ns else None
+        operation_len = int(self.params.drive_len_ns)
 
         start = float(self.params.start_freq_hz)
         stop = float(self.params.stop_freq_hz)
