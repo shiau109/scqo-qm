@@ -27,7 +27,52 @@ from typing import Iterable, Optional
 
 from ._flux_limits import check_flux_pulse_relative, declared_idle_offset_v
 
-__all__ = ["resolve_coupler_knob", "guard_coupler_amplitudes"]
+__all__ = ["find_coupler_pulse", "resolve_coupler_knob", "guard_coupler_amplitudes"]
+
+
+def find_coupler_pulse(macro, coupler):
+    """The pulse object whose ``.amplitude`` IS this macro's coupler operating
+    point, or None when the gate plays no coupler pulse.
+
+    Non-raising, because its caller is the DEVICE SURFACE (``QMQubitPair``'s
+    ``<op>_coupler_flux`` knob) rather than a probe: a snapshot that cannot
+    answer must degrade, not crash a session.
+
+    THREE shapes are in use and only the first was ever handled, which is why
+    the knob read None on every pair of the lab's own chip:
+
+    * vendor ``quam_builder`` ``CZGate`` — an explicit ``coupler_flux_pulse``
+      holding a ``Pulse``;
+    * the same field holding a pulse NAME (the vendor resolves it through
+      ``coupler.get_pulse``);
+    * the lab's ``ISwapImplementation`` — no ``coupler_flux_pulse`` at all. It
+      plays ONE named ``flux_pulse`` on both the control's z line and the
+      coupler, so the coupler's own copy is the operating point.
+
+    A macro that DECLARES ``coupler_flux_pulse`` and leaves it None is a
+    fixed-coupler gate and correctly resolves to None; one that never declares
+    it is a different shape, not a fixed coupler — telling those two apart is
+    the whole point of the hasattr below.
+
+    Takes the RESOLVED macro rather than an operation name: the caller has
+    already matched the roster's operation against the QUAM macro key, which is
+    case-insensitive (the roster spells it "cz", QUAM spells it "CZ"), and a
+    second lookup here would have to repeat that and could get it wrong.
+    """
+    if macro is None:
+        return None
+
+    if hasattr(macro, "coupler_flux_pulse"):
+        pulse = macro.coupler_flux_pulse       # None = genuinely fixed coupler
+    else:
+        pulse = getattr(macro, "flux_pulse", None)
+    if pulse is None:
+        return None
+    if not isinstance(pulse, str):
+        return pulse                            # already the Pulse object
+
+    ops = getattr(coupler, "operations", {}) or {}
+    return ops.get(pulse)
 
 
 def resolve_coupler_knob(swap_pair, swap_operation: str, *, why: str = ""):

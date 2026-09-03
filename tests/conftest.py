@@ -56,7 +56,7 @@ kind       = "qubit_pair"
 high       = "q2"
 low        = "q1"
 coupler    = "q1_q2_c"
-operations = ["cz"]
+operations = ["cz", "iswap"]
 
 [lines.fl]
 readout = ["q1", "q2", "q3"]
@@ -171,6 +171,10 @@ def _coupler(name: str) -> SimpleNamespace:
         id=name, name=name, flux_point="off",
         decouple_offset=0.0, interaction_offset=0.12, arbitrary_offset=0.0,
         settle_time=None,
+        # The coupler carries its OWN copy of a named flux pulse. That is where
+        # an ISwapImplementation-shaped macro's coupler operating point lives —
+        # the macro holds only the NAME (see the iswap stub below).
+        operations={"swap_flattop": Pulse(amplitude=0.081, length=96)},
     )
 
 
@@ -203,11 +207,24 @@ def make_stub_machine() -> SimpleNamespace:
         qubit_control=q1, qubit_target=q2,
         coupler=_coupler("coupler_q1_q2"),
         moving_qubit="control", detuning=0.05,
-        macros={"CZ": SimpleNamespace(  # QUAM spells the macro "CZ", roster "cz"
-            coupler_flux_pulse=Pulse(amplitude=-0.125, length=128),
-            flux_pulse_qubit=Pulse(amplitude=0.0495, length=128),
-            phase_shift_control=0.0, phase_shift_target=0.0,
-        )},
+        macros={
+            "CZ": SimpleNamespace(  # QUAM spells the macro "CZ", roster "cz"
+                # the VENDOR quam_builder CZGate shape: an explicit Pulse
+                coupler_flux_pulse=Pulse(amplitude=-0.125, length=128),
+                flux_pulse_qubit=Pulse(amplitude=0.0495, length=128),
+                phase_shift_control=0.0, phase_shift_target=0.0,
+            ),
+            # The LAB's ISwapImplementation shape, and the reason it is here: the
+            # <op>_coupler_flux binding was written against the CZ shape only, so
+            # a stub carrying just that shape passed while every pair on the real
+            # chip — where every macro is an ISwapImplementation — read None and
+            # refused writes. It declares NO coupler_flux_pulse and names one
+            # flux_pulse played on both the control's z line and the coupler.
+            "iswap": SimpleNamespace(
+                flux_pulse="swap_flattop",
+                phase_shift_control=0.0, phase_shift_target=0.0,
+            ),
+        },
     )
     return SimpleNamespace(
         qubits={"q1": q1, "q2": q2, "q3": q3},

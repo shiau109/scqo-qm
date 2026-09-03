@@ -384,6 +384,56 @@ def test_composite_view_reads_and_writes_the_gate_knobs(backend, stub_machine):
     assert pair.read_knob("cz_vz_low_rad") == pytest.approx(-np.pi / 2)
 
 
+def test_coupler_flux_resolves_the_lab_iswap_macro_shape(backend, stub_machine):
+    """The knob must find its coupler pulse on the shape the LAB actually runs.
+
+    Every pair macro in the live quam_state is an ISwapImplementation, which
+    declares no `coupler_flux_pulse` at all — it names ONE flux_pulse played on
+    both the control's z line and the coupler, so the coupler's own copy of that
+    pulse is the operating point. The binding used to look only for
+    `macro.coupler_flux_pulse`, so on the real chip this knob read None for every
+    pair (reported as 'fixed coupler', which is false — the macro does play one)
+    and every write raised KeyError. The CZ-only stub is what hid it.
+    """
+    pair_qp = stub_machine.qubit_pairs["coupler_q1_q2"]
+    stored = pair_qp.coupler.operations["swap_flattop"]
+    pair = backend.device.component("q1_q2")
+
+    assert pair.read_knob("iswap_coupler_flux") == pytest.approx(0.081)
+    pair.write_knob("iswap_coupler_flux", 0.15)
+    assert stored.amplitude == pytest.approx(0.15)      # the COUPLER's pulse moved
+    assert pair.read_knob("iswap_coupler_flux") == pytest.approx(0.15)
+
+    # the two shapes stay independent: writing one must not touch the other
+    assert pair.read_knob("cz_coupler_flux") == pytest.approx(-0.125)
+
+
+def test_coupler_flux_reads_none_only_for_a_genuinely_fixed_coupler(backend, stub_machine):
+    """`coupler_flux_pulse = None` means the gate plays no coupler pulse, and
+    that is the ONLY case that reads None. A macro of an unfamiliar shape must
+    not be silently reported as fixed-coupler — that misreads the device."""
+    macros = stub_machine.qubit_pairs["coupler_q1_q2"].macros
+    pair = backend.device.component("q1_q2")
+
+    macros["CZ"].coupler_flux_pulse = None       # declared, and empty
+    assert pair.read_knob("cz_coupler_flux") is None
+    with pytest.raises(KeyError, match="plays no coupler pulse"):
+        pair.write_knob("cz_coupler_flux", 0.1)
+
+    # ...while the iswap-shaped macro beside it still resolves
+    assert pair.read_knob("iswap_coupler_flux") == pytest.approx(0.081)
+
+
+def test_the_stub_carries_both_macro_shapes(stub_machine):
+    """A regression guard on the FIXTURE, because the fixture is what hid the
+    bug: a stub that only ever carries the vendor CZ shape lets the binding pass
+    while being wrong for every pair on the lab's own chip."""
+    macros = stub_machine.qubit_pairs["coupler_q1_q2"].macros
+    assert hasattr(macros["CZ"], "coupler_flux_pulse"), "lost the vendor CZGate shape"
+    assert not hasattr(macros["iswap"], "coupler_flux_pulse"),         "the iswap stub must NOT declare coupler_flux_pulse — that is the point"
+    assert isinstance(macros["iswap"].flux_pulse, str)
+
+
 def test_composite_view_refuses_undeclared_and_unrealized_knobs(backend):
     """Exact-cause errors: an undeclared operation names the declared set, a
     non-knob name names the legal suffixes, and a suffix QM cannot realize
@@ -391,7 +441,7 @@ def test_composite_view_refuses_undeclared_and_unrealized_knobs(backend):
     pair = backend.device.component("q1_q2")
 
     with pytest.raises(KeyError, match="not declared on this composite"):
-        pair.read_knob("iswap_coupler_flux")
+        pair.read_knob("cnot_coupler_flux")   # cz and iswap are declared; cnot is not
     with pytest.raises(KeyError, match="not a per-operation knob"):
         pair.read_knob("coupler_flux")
     with pytest.raises(NotImplementedError, match="FLUX-activated"):

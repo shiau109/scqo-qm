@@ -248,13 +248,23 @@ UNREALIZED: dict[str, dict[str, Unrealized]] = {}
 #: the gate macro "CZ", the roster spells the operation "cz").
 OP_KNOB_BINDINGS: dict[str, VendorBinding] = {
     "coupler_flux": VendorBinding(
-        path="qp.macros['<op>'].coupler_flux_pulse.amplitude", unit="V",
+        path="qp.macros['<op>'].coupler_flux_pulse.amplitude "
+             "| qp.coupler.operations[qp.macros['<op>'].flux_pulse].amplitude",
+        unit="V",
         note="the flux-activated gate operating point ON THE COUPLER LINE - the "
              "amplitude of the pulse the gate macro plays on qp.coupler while "
              "the moving qubit's z pulse runs. Distinct from the coupler's "
              "STANDING bias, which is idle_flux on the coupler mode's own flux "
-             "channel; a macro with coupler_flux_pulse = None (fixed coupler) "
-             "reads None and refuses writes",
+             "channel. THREE macro shapes carry it and the resolution walks them "
+             "in order (scqo_qm.experiments._coupler_knob.find_coupler_pulse): "
+             "the vendor quam_builder CZGate's coupler_flux_pulse holding a Pulse; "
+             "the same field holding a pulse NAME; and the lab's "
+             "ISwapImplementation, which declares no coupler_flux_pulse at all and "
+             "instead plays ONE named flux_pulse on both the control's z line and "
+             "the coupler, so the coupler's own copy of it is the operating point. "
+             "A macro that DECLARES coupler_flux_pulse and leaves it None is a "
+             "fixed-coupler gate: reads None, refuses writes. One that never "
+             "declares it is a different shape, not a fixed coupler",
     ),
     "vz_high_rad": VendorBinding(
         path="qp.macros['<op>'].phase_shift_control|phase_shift_target", unit="turns",

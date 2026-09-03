@@ -214,7 +214,9 @@ def test_components_inventory_is_a_truthful_witness(backend, roster):
     assert inventory["q1_ro"].operations == ("readout",)
     assert inventory["q1_xy"].operations == ("rx",)
     assert inventory["q1_q2_c_z"].operations == ("flux_bias",)
-    assert inventory["q1_q2"].operations == ("cz",)
+    # two DECLARED operations on the pair, deliberately of different macro
+    # shapes: the vendor CZGate and the lab's ISwapImplementation (conftest)
+    assert inventory["q1_q2"].operations == ("cz", "iswap")
     assert inventory["q1_q2"].members["coupler"] == ("q1_q2_c",)
 
     checks = vendor_checks(roster, inventory)

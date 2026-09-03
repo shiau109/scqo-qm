@@ -43,6 +43,7 @@ from scqo.entities import Channel, Composite
 from scqo.fieldmap import Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
+from scqo_qm.experiments._coupler_knob import find_coupler_pulse
 from scqo_qm.backend.fieldmap import (
     FIELD_BINDINGS,
     OP_KNOB_BINDINGS,
@@ -567,7 +568,7 @@ class QMQubitPair(CompositeView):
         self._unrealized(suffix, field)
         macro = self._macro(op)
         if suffix == "coupler_flux":
-            pulse = getattr(macro, "coupler_flux_pulse", None)
+            pulse = find_coupler_pulse(macro, getattr(self._qp, 'coupler', None))
             if pulse is None:  # fixed coupler: the gate plays no coupler pulse
                 return None
             amp = getattr(pulse, "amplitude", None)
@@ -583,10 +584,10 @@ class QMQubitPair(CompositeView):
         self._unrealized(suffix, field)
         macro = self._macro(op)
         if suffix == "coupler_flux":
-            pulse = getattr(macro, "coupler_flux_pulse", None)
+            pulse = find_coupler_pulse(macro, getattr(self._qp, 'coupler', None))
             if pulse is None:
                 raise KeyError(
-                    f"{self.name}.{field}: macro {op!r} has no coupler_flux_pulse "
+                    f"{self.name}.{field}: macro {op!r} plays no coupler pulse "
                     f"(a fixed-coupler gate) — nothing realizes a coupler "
                     f"operating point for it")
             pulse.amplitude = float(value)
