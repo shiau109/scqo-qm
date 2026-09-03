@@ -186,8 +186,9 @@ scqo's `RecordingDevice` owns its own state JSON; the QUAM tree is the vendor st
 qualibrate writers are RETIRED, but official nodes run through the GUI can still write QUAM, so
 **QM sessions keep `state_sync="pull"`** (the vendor wins at startup; scqo pushes only what it
 freshly measures — `scqo_qm/scqo_backend.py` enforces this before any QUAM state is loaded).
-Flipping a device to `"push"` is a per-device ops decision for when the GUI is retired from
-calibration writing on that device. **Which QUAM state loads** is decided by the device's cooldown
+`"push"` is additionally refused for EVERY hardware backend by scqo's `make_session` (temporary,
+core-side; only the built-in simulated backend runs push), so this guard is the QUAM-specific
+second line — flipping a device to `"push"` later needs both lifted. **Which QUAM state loads** is decided by the device's cooldown
 setup alone (`<device>/<cycle>/<name>/backend_config/` holding canonical `state.json` +
 `wiring.json`); keep qualibrate's own `[quam] state_path` pointed at the same folder on machines
 running both stacks.
