@@ -38,8 +38,10 @@ FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
     "drive": {
         "drive_freq_hz": VendorBinding(
             path="q.f_01", unit="Hz",
-            convert="a write also shifts q.xy.RF_frequency by the same delta "
-                    "(quam_fields.set_drive_freq keeps the drive line on the qubit)"),
+            convert="a write lands the same absolute Hz on q.f_01 and "
+                    "q.xy.RF_frequency (the drive line plays RF_frequency; scqo "
+                    "reads f_01); the session factory refuses a state.json where "
+                    "the two disagree (quam_fields.drive_frequency_problems)"),
         "pi_amp": VendorBinding(
             path="q.xy.operations['x180'].amplitude", unit="",
             convert="a write covers the x180 family's storage nodes; fields that "

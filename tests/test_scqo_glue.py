@@ -196,6 +196,39 @@ def test_backend_entry_point_resolves_and_guards_fire(tmp_path, roster):
         factory(pull_cfg, {"backend": "qblox"}, roster)  # wrong family refused
 
 
+def test_factory_runs_the_whole_tree_audits_on_the_loaded_state(tmp_path, roster, monkeypatch):
+    """The audits fire from build_backend (the only place they run) and REFUSE
+    with SystemExit naming the file. QMBackend.load is stubbed to hand back the
+    fixture tree, so no QUAM state is needed -- only the two canonical files the
+    factory checks for before loading."""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from scqo.labconfig import LabConfig
+
+    from conftest import make_stub_machine
+    from scqo_qm import scqo_backend
+    from scqo_qm.backend import qm_backend
+
+    folder = tmp_path / "backend_config"
+    folder.mkdir()
+    for name in ("state.json", "wiring.json"):
+        (folder / name).write_text("{}", encoding="utf-8")
+    setup = {"backend": "qm", "instrument_config": str(folder)}
+    cfg = LabConfig(state_sync="pull")
+
+    machine = make_stub_machine()
+    monkeypatch.setattr(qm_backend.QMBackend, "load",
+                        lambda **kw: SimpleNamespace(machine=machine))
+    assert scqo_backend.build_backend(cfg, setup, roster).machine is machine  # compliant
+
+    machine.qubits["q1"].xy.RF_frequency = 4.9e9  # f_01 stays 4.8e9
+    with pytest.raises(SystemExit, match="drive frequencies") as exc:
+        scqo_backend.build_backend(cfg, setup, roster)
+    assert "qubits.q1.f_01" in str(exc.value) and "state.json" in str(exc.value)
+
+
 def test_components_inventory_is_a_truthful_witness(backend, roster):
     """``components()`` is the doctor's WITNESS: exactly the entities this backend
     serves a view for, each reported with the ROSTER's kind (a kind disagreement

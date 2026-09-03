@@ -1,13 +1,14 @@
 """Neutral QUAM field accessors — the single place that knows how SCQO's neutral
 calibration fields map onto QUAM attribute paths.
 
-Both call sites write through these primitives, so the
-``f_01`` / ``resonator.RF_frequency`` / ``xy.operations['x180'].amplitude`` mapping is
-defined exactly once:
-
-* the scqo backend's CHANNEL views (``scqo_qm/backend/qm_backend.py``:
-  ``QMDriveChannel`` / ``QMReadoutChannel`` / ``QMFluxChannel``) — neutral get/set;
-* the qualibrate ``apply_update`` writebacks (``customized/node/LCH_*/update.py``).
+The scqo backend's CHANNEL views (``scqo_qm/backend/qm_backend.py``:
+``QMDriveChannel`` / ``QMReadoutChannel`` / ``QMFluxChannel``) do every neutral
+get/set through these primitives, so the ``f_01`` / ``resonator.RF_frequency`` /
+``xy.operations['x180'].amplitude`` mapping is defined exactly once. (The retired
+LCH qualibrate shells were the second caller; the vendored official nodes write
+QUAM directly and never import this module.) The whole-tree audits
+(``flux_point_problems`` / ``flux_headroom_*`` / ``drive_frequency_problems``) are
+the same knowledge applied once at session construction by ``scqo_backend.py``.
 
 Pure attribute access on a passed QUAM ``qubit``: no qm/quam import here, so this stays
 importable without an instrument (and unit-testable with a stub qubit).
@@ -15,7 +16,9 @@ importable without an instrument (and unit-testable with a stub qubit).
 Neutral field -> QUAM path (the neutral names are the greenfield ones; which CHANNEL
 entity owns each is in scqo_qm/backend/fieldmap.py, keyed by channel KIND)
     readout_freq_hz       <-> q.resonator.RF_frequency  (and q.resonator.f_01 when present)
-    drive_freq_hz         <-> q.f_01                     (and q.xy.RF_frequency, kept in step)
+    drive_freq_hz         <-> q.f_01 and q.xy.RF_frequency (both written to the same
+                              absolute value; drive_frequency_problems refuses a tree
+                              where they differ)
     pi_amp                <-> q.xy.operations['x180'].amplitude
     pi_duration_s         <-> q.xy.operations['x180'].length (s <-> ns, 4 ns grid)
     drive_amp             <-> q.xy.operations['saturation'].amplitude
@@ -32,6 +35,7 @@ entity owns each is in scqo_qm/backend/fieldmap.py, keyed by channel KIND)
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 #: The operation whose amplitude is the calibrated pi pulse (the neutral ``pi_amp``).
@@ -52,38 +56,22 @@ def set_readout_freq(qubit: Any, value: float) -> None:
         qubit.resonator.f_01 = value
 
 
-def shift_readout_freq(qubit: Any, delta: float) -> None:
-    """Shift only the resonator RF frequency by ``delta`` Hz."""
-    qubit.resonator.RF_frequency = float(qubit.resonator.RF_frequency) + float(delta)
-
-
 # ----------------------------------------------------------------------- drive (f_01)
 def get_drive_freq(qubit: Any) -> float:
     return float(qubit.f_01)
 
 
-def _seed_f01_if_unset(qubit: Any) -> None:
-    """An uncalibrated qubit has ``f_01`` unset (None) while its drive RF is always known;
-    on resonance the two coincide, so seed ``f_01`` from the drive RF before shifting."""
-    if qubit.f_01 is None:
-        qubit.f_01 = float(qubit.xy.RF_frequency)
-
-
 def set_drive_freq(qubit: Any, value: float) -> None:
-    """Set ``f_01`` to an absolute Hz and shift the xy drive RF by the same delta, so the
-    fixed ``f_01`` <-> RF offset is preserved."""
-    _seed_f01_if_unset(qubit)
-    delta = float(value) - float(qubit.f_01)
-    qubit.f_01 = float(value)
-    qubit.xy.RF_frequency = float(qubit.xy.RF_frequency) + delta
-
-
-def shift_drive_freq(qubit: Any, delta: float) -> None:
-    """Shift both ``f_01`` and the xy drive RF by ``delta`` Hz (keeps them in step)."""
-    _seed_f01_if_unset(qubit)
-    delta = float(delta)
-    qubit.f_01 = float(qubit.f_01) + delta
-    qubit.xy.RF_frequency = float(qubit.xy.RF_frequency) + delta
+    """Set the drive frequency to an absolute Hz on BOTH stores: ``f_01`` (what
+    scqo reads back as drive_freq_hz) and ``xy.RF_frequency`` (what the drive
+    line plays - QUAM derives intermediate_frequency = RF - LO from it, and every
+    probe's update_frequency starts there). The official nodes write the pair the
+    same way, and :func:`drive_frequency_problems` refuses a tree where they
+    disagree, so a mismatched tree is REPAIRED by the first write rather than
+    carried along as a fixed offset (the old delta semantics)."""
+    value = float(value)
+    qubit.f_01 = value
+    qubit.xy.RF_frequency = value
 
 
 # ---------------------------------------------------------------------- readout amplitude
@@ -323,6 +311,61 @@ def flux_point_problems(machine: Any) -> list[str]:
                 f"{GOVERNED_COUPLER_FLUX_POINT!r}. Set it to "
                 f"{GOVERNED_COUPLER_FLUX_POINT!r} in state.json.")
 
+    return problems
+
+
+# ------------------------------------------------------------ drive frequency
+#: How far ``f_01`` and ``xy.RF_frequency`` may drift before the drive audit
+#: refuses. ulp noise at 5 GHz is ~1e-6 Hz and a hand edit is kHz or more, so
+#: 1 Hz separates float echo from a real disagreement with room to spare.
+DRIVE_FREQ_TOLERANCE_HZ = 1.0
+
+
+def _finite_hz(value: Any):
+    """``value`` as a finite float, or None when the tree cannot answer: unset
+    (None), a ``#``-reference that did not resolve (QUAM hands back the string),
+    NaN or inf."""
+    try:
+        hz = float(value)
+    except (TypeError, ValueError):
+        return None
+    return hz if math.isfinite(hz) else None
+
+
+def drive_frequency_problems(machine: Any) -> list[str]:
+    """Every qubit whose ``f_01`` and ``xy.RF_frequency`` disagree.
+
+    scqo's ``drive_freq_hz`` READS ``f_01`` while the drive line PLAYS
+    ``xy.RF_frequency`` (QUAM's ``intermediate_frequency = RF - LO`` feeds every
+    probe's ``update_frequency``), so a tree carrying two different numbers makes
+    the knob report a frequency the hardware never emits. ``set_drive_freq``
+    writes both and the official nodes write both; a hand edit of one, or a node
+    that moves only the RF, is the remaining way in - which is why this is a
+    startup audit rather than a setter check.
+
+    Skips what it cannot judge: no ``xy`` (nothing plays), ``f_01`` None (an
+    uncalibrated qubit - legitimate on a real state file), or an RF that is not
+    a finite number. Pure (no I/O, no QUA); the caller decides how loudly to
+    fail. Empty list = compliant.
+    """
+    problems: list[str] = []
+    for name, qubit in getattr(machine, "qubits", {}).items():
+        xy = getattr(qubit, "xy", None)
+        if xy is None:
+            continue
+        f01 = _finite_hz(getattr(qubit, "f_01", None))
+        rf = _finite_hz(getattr(xy, "RF_frequency", None))
+        if f01 is None or rf is None:
+            continue  # cannot determine - never an accusation
+        if abs(f01 - rf) > DRIVE_FREQ_TOLERANCE_HZ:
+            problems.append(
+                f"qubits.{name}.f_01 = {f01} Hz but qubits.{name}.xy.RF_frequency = "
+                f"{rf} Hz (differ by {abs(f01 - rf)} Hz). The drive line PLAYS "
+                f"xy.RF_frequency (QUAM's intermediate_frequency = RF - LO feeds every "
+                f"probe's update_frequency) while scqo's drive_freq_hz READS f_01, so "
+                f"the knob would show a number the hardware never emits. Edit "
+                f"state.json so both hold the intended value (the audit cannot know "
+                f"which one is right).")
     return problems
 
 

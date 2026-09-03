@@ -245,15 +245,15 @@ def test_flux_channel_serves_both_vendor_shapes(backend, stub_machine):
 
 def test_channel_views_round_trip_the_neutral_knobs(backend, stub_machine):
     """Neutral get/set maps onto QUAM through scqo_qm.quam_fields; a
-    drive_freq_hz write shifts both f_01 and xy.RF_frequency."""
+    drive_freq_hz write lands ONE absolute value on both f_01 and
+    xy.RF_frequency (scqo reads the first, the drive line plays the second)."""
     q2 = stub_machine.qubits["q2"]
     xy = backend.device.component("q2_xy")
     ro = backend.device.component("q2_ro")
 
-    rf0 = float(q2.xy.RF_frequency)
     xy.drive_freq_hz = 5.102e9
     assert float(q2.f_01) == pytest.approx(5.102e9)
-    assert float(q2.xy.RF_frequency) == pytest.approx(rf0 + 2e6)
+    assert float(q2.xy.RF_frequency) == pytest.approx(5.102e9)
 
     xy.pi_amp = 0.123
     assert xy.pi_amp == pytest.approx(0.123)

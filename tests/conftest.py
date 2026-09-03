@@ -182,7 +182,10 @@ def _qubit(name: str, *, f_01: float, res_rf: float,
            flux: bool = True) -> SimpleNamespace:
     q = SimpleNamespace(
         id=name, name=name, f_01=f_01,
-        xy=_xy(f_01 + 100e6), resonator=_resonator(res_rf),
+        # the drive RF IS f_01: set_drive_freq writes both to one absolute value
+        # and drive_frequency_problems refuses a tree where they differ (exactly
+        # how _resonator pairs RF_frequency with f_01)
+        xy=_xy(f_01), resonator=_resonator(res_rf),
         # a Thermalizing*Transmon carries this; stock QUAM classes do NOT (the
         # stale_qubit fixture below stands in for one), and the difference is
         # exactly what set_thermalization_time refuses on.

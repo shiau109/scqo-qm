@@ -1,8 +1,8 @@
 """Unit tests for the single neutral-field <-> QUAM mapping (scqo_qm.quam_fields).
 
-Pure attribute access on a stub qubit -- no qm/quam needed. The existing
-``test_*_update.py`` files exercise the same primitives through each node's
-``apply_update`` (which now delegates here), so behaviour stays pinned on both sides.
+Pure attribute access on a stub qubit -- no qm/quam needed. The channel views in
+scqo_qm/backend/qm_backend.py delegate here; test_qm_channel_views_use_the_shared_mapping
+below pins that dedup.
 """
 
 from types import SimpleNamespace
@@ -13,6 +13,7 @@ from scqo_qm import quam_fields
 
 
 def _qubit(*, f_01=5.0e9, xy_rf=5.1e9, res_rf=6.0e9, res_f01=6.0e9):
+    # xy_rf deliberately != f_01: the drive tests prove set_drive_freq REPAIRS a mismatch
     return SimpleNamespace(
         f_01=f_01,
         xy=SimpleNamespace(
@@ -39,35 +40,27 @@ def test_set_readout_freq_skips_f01_when_absent():
     assert not hasattr(q.resonator, "f_01")
 
 
-def test_shift_readout_freq_only_touches_rf():
-    q = _qubit()
-    quam_fields.shift_readout_freq(q, 250_000.0)
-    assert q.resonator.RF_frequency == pytest.approx(6.0e9 + 250_000.0)
-    assert q.resonator.f_01 == pytest.approx(6.0e9)  # untouched
-    assert isinstance(q.resonator.RF_frequency, float)
-
-
 # --------------------------------------------------------------------------- drive (f_01)
-def test_set_drive_freq_preserves_f01_rf_offset():
-    q = _qubit(f_01=5.0e9, xy_rf=5.1e9)  # offset = +100 MHz
+def test_set_drive_freq_writes_both_stores_to_the_absolute_value():
+    """f_01 is what scqo reads back; xy.RF_frequency is what the drive line plays.
+    One absolute value lands on both -- a stub that starts MISMATCHED (the old
+    delta semantics would have carried the +100 MHz offset along) is repaired by
+    the write, which is the invariant drive_frequency_problems enforces."""
+    q = _qubit(f_01=5.0e9, xy_rf=5.1e9)  # mismatched on purpose
     quam_fields.set_drive_freq(q, 5.002e9)
     assert q.f_01 == pytest.approx(5.002e9)
-    assert q.xy.RF_frequency == pytest.approx(5.102e9)  # shifted by the same +2 MHz
+    assert q.xy.RF_frequency == pytest.approx(5.002e9)
+    assert isinstance(q.xy.RF_frequency, float)
+    assert quam_fields.get_drive_freq(q) == pytest.approx(5.002e9)
 
 
-def test_shift_drive_freq_moves_both_by_delta():
-    q = _qubit(f_01=5.0e9, xy_rf=5.1e9)
-    quam_fields.shift_drive_freq(q, -500_000.0)
-    assert q.f_01 == pytest.approx(5.0e9 - 500_000.0)
-    assert q.xy.RF_frequency == pytest.approx(5.1e9 - 500_000.0)
-
-
-def test_drive_freq_seeds_f01_from_rf_when_unset():
+def test_set_drive_freq_needs_no_seed_on_an_uncalibrated_qubit():
+    """A real state file carries f_01=None for an uncalibrated qubit (qm_backend's
+    snapshot tolerates it); the absolute write needs no seed from the RF."""
     q = _qubit(f_01=None, xy_rf=5.1e9)
-    quam_fields.shift_drive_freq(q, -1e6)
-    # f_01 seeded from the drive RF (on resonance), then both shifted by -1 MHz
-    assert q.f_01 == pytest.approx(5.1e9 - 1e6)
-    assert q.xy.RF_frequency == pytest.approx(5.1e9 - 1e6)
+    quam_fields.set_drive_freq(q, 4.95e9)
+    assert q.f_01 == pytest.approx(4.95e9)
+    assert q.xy.RF_frequency == pytest.approx(4.95e9)
 
 
 # ------------------------------------------------------------------------------ pi amplitude
@@ -302,7 +295,7 @@ def test_qm_channel_views_use_the_shared_mapping():
     drive = QMDriveChannel("q0_xy", q)
     drive.drive_freq_hz = 5.002e9
     assert q.f_01 == pytest.approx(5.002e9)
-    assert q.xy.RF_frequency == pytest.approx(5.102e9)
+    assert q.xy.RF_frequency == pytest.approx(5.002e9)  # the same absolute value, not a shifted offset
 
     drive.pi_amp = 0.3
     assert q.xy.operations["x180"].amplitude == pytest.approx(0.3)

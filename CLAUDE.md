@@ -21,7 +21,7 @@ scqo_qm/
                          #   build_backend(cfg, setup, roster) fires the state_sync="pull"
                          #   guard BEFORE any QUAM state is touched, loads the setup's vendor
                          #   folder (canonical names state.json + wiring.json; loud SystemExit
-                         #   when missing), audits flux points/headroom, threads the ROSTER
+                         #   when missing), audits flux points/headroom/drive frequency, threads the ROSTER
   backend/
     qm_backend.py        # QMBackend (scqo.Backend) + QMDeviceModel + ONE view class per
                          #   CHANNEL KIND (QMDriveChannel/QMReadoutChannel/QMFluxChannel)
@@ -127,7 +127,10 @@ builder carries its own rail constant. Two frames, two entry points, mirroring s
 is silent in both directions. Couplers name their points `off`/`on` but their attributes
 `decouple_offset`/`interaction_offset`. Severity split (load-bearing): *clipping* → refuse;
 *reach* (const = rail/2 convention) → advisory only, enforced ONLY in
-`quam_fields.flux_headroom_warnings`. The whole-tree audits run once from `scqo_backend.py`.
+`quam_fields.flux_headroom_warnings`. The whole-tree audits — these two plus
+`quam_fields.drive_frequency_problems` (f_01 must equal xy.RF_frequency: the drive line plays the
+RF while `drive_freq_hz` reads f_01; fix by editing state.json, since `scqo set` goes through the
+same factory) — run once from `scqo_backend.py`.
 
 **Flux-amplitude sweeps: absolute volts or prefactor.** Both pair swap experiments take
 `amp_mode="absolute"|"prefactor"` (+ `flux_role`). scqo drives them `"absolute"` (the swept
@@ -245,7 +248,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 
 | File | Covers | Needs QM stack? |
 |---|---|---|
-| `test_quam_fields.py`, `test_flux_headroom_guard.py`, `test_flux_point_guard.py` | the neutral-field mapping + whole-tree audits | no |
+| `test_quam_fields.py`, `test_flux_headroom_guard.py`, `test_flux_point_guard.py`, `test_drive_frequency_guard.py` | the neutral-field mapping + whole-tree audits | no |
 | `test_flux_pulse_amplitude.py`, `test_amp_limits.py` | the two flux frames, rails, the one-home amplitude bound (AST scan over experiments/) | no |
 | `test_reset_method.py` | the active-reset door: opt-in census, refusals, the acquire() backstop, the .reset-literal scan | no |
 | `test_experiment_registration.py` | every experiment module has its __init__ import line (both directions) | no |

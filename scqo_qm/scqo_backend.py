@@ -47,6 +47,7 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
     import warnings
 
     from scqo_qm.quam_fields import (
+        drive_frequency_problems,
         flux_headroom_problems,
         flux_headroom_warnings,
         flux_point_problems,
@@ -55,7 +56,7 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
 
     backend = QMBackend.load(state_path=str(folder), roster=roster)
 
-    # Two whole-tree flux audits, reported TOGETHER so one `scqo run` surfaces
+    # Three whole-tree audits, reported TOGETHER so one `scqo run` surfaces
     # every config problem at once rather than one per attempt.
     #
     # flux_point_problems: the governed knob must BE the applied bias. Checked
@@ -71,6 +72,12 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
     # config that merely leaves range on the table warns instead, or the live
     # 5Q4C couplers (const 0.15 V, which have always run) would block every
     # session.
+    #
+    # drive_frequency_problems: f_01 (what drive_freq_hz READS) must equal
+    # xy.RF_frequency (what the drive line PLAYS). set_drive_freq writes both,
+    # so only a hand edit or a foreign node can split them - and the remedy is
+    # a hand edit of state.json too, because `scqo set` builds its session
+    # through this very factory and would be refused the same way.
     for advisory in flux_headroom_warnings(backend.machine):
         warnings.warn(advisory, RuntimeWarning, stacklevel=2)
 
@@ -81,6 +88,10 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
         ("flux headroom", "declares voltages its ports cannot emit, which the DAC "
                           "clips silently and the simulator does not show",
          flux_headroom_problems(backend.machine)),
+        ("drive frequencies", "disagree between f_01 and xy.RF_frequency, so "
+                              "drive_freq_hz would read a number the drive line "
+                              "never plays",
+         drive_frequency_problems(backend.machine)),
     ]
     report = "\n".join(
         f"{what} in {folder / 'state.json'} {why}:\n  - " + "\n  - ".join(problems)
