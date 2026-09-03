@@ -37,7 +37,14 @@ scqo_qm/
                          #   cryoscopes this command line as their writeback hint)
     close_qm.py          # operator CLI: python -m scqo_qm.backend.close_qm - halt
                          #   jobs + close open QMs when a dead session still holds
-                         #   the cluster's locks (QMBackend.close_qm does the work)
+                         #   the cluster's locks (QMBackend.close_qm does the work).
+                         #   NOT the same thing as scqo's Backend.release_instruments
+                         #   hook, which this backend deliberately leaves at its []
+                         #   default: qm_session closes the QuantumMachine in its own
+                         #   finally, so an idle scqo process holds no cluster lock
+                         #   and there is nothing to hand back before a prompt. This
+                         #   door is for a session that DIED mid-job. (scqo-qblox
+                         #   implements the hook - it has no disconnect at all.)
   experiments/
     __init__.py          # one import line per experiment module so @register runs (manual;
                          #   tests/test_experiment_registration.py enforces completeness both
