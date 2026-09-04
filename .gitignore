@@ -12,6 +12,7 @@ __pycache__
 **/quam_state
 state_lib/
 assets
+# No repo-local venv belongs here - the tests run in the shared .venv-qm (ENVIRONMENTS.md).
 .venv*
 **/calibration_data
 /.img

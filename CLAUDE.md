@@ -235,7 +235,7 @@ experiment — never add per-command wrappers). `simulated` is the practice mode
   (editable lab code; qualibrate does not list them).
 - **Environments:** the scqo path runs in the shared `.venv-qm` (rebuildable from
   `requirements-qm.lock.txt`); siblings `.venv-view` (no instrument libs) and `.venv-qblox`.
-  `qm.bat` activates `.venv-qm` and runs `qualibrate start` (GUI).
+  Full rule for all four repos: [ENVIRONMENTS.md](ENVIRONMENTS.md). `qm.bat` activates `.venv-qm` and runs `qualibrate start` (GUI).
 - **qm logging vs the CLI JSON contract:** fused experiment modules import `qm.qua` at module
   level (the DSL star-import cannot be function-local), and qm's import-time logger writes to
   STDOUT by default — `scqo_qm/experiments/__init__.py` flips qm's own
@@ -249,14 +249,20 @@ experiment — never add per-command wrappers). `simulated` is the practice mode
 
 ## Tests
 
-Run as **`.venv\Scripts\python.exe -m pytest tests\ -q`** (the repo venv is built from
-`requirements-qm.lock.txt` + editable scqo/scqat; avoid bare `uv run` — its sync would rebuild
-the env from pyproject, displacing the lockfile pin authority. `uv run --no-sync` is the
-acceptable alternative). **The full suite IS the targeted run here** - it is small enough that a
-selection map would cost more attention than it saves; run it before every commit. If the repo
-venv is missing or stale, use the shared one: the v3.0.0 release notes record the repo venv
-failing to collect for want of `typing_extensions`, and both recent cuts were validated with the
-shared venv. No test count is quoted here on purpose - see the `OFFLINE-VALIDATED` line in the
+Run as **`<parent>\.venv-qm\Scripts\python.exe -m pytest tests\ -q`** — the SHARED env, built
+from `requirements-qm.lock.txt` + editable scqat/SCQO/scqo-qm (INSTALL §1, or AGENTS.md *Setup*
+in a fork). Avoid bare `uv run`: its sync would rebuild the env from pyproject, displacing the
+lockfile pin authority. `uv run --no-sync` is meaningful only with `UV_PROJECT_ENVIRONMENT`
+pointed at `.venv-qm` — by default it would still target `scqo-qm/.venv` — so calling the
+interpreter by path is unambiguous and preferred. **The full suite IS the targeted run here** -
+it is small enough that a selection map would cost more attention than it saves; run it before
+every commit.
+
+**There is no repo-local venv for this repo.** A `scqo-qm/.venv` on disk is residue of a stray
+`uv run`: it resolves from `pyproject.toml` rather than the lockfile, and on this machine
+(checked 2026-09-04) it holds no `qm`, no `quam`, no `qualibrate` and no `scqat`, with `scqo`
+frozen at 2.3.0. Do not test in it. The v3.0.0 release notes already recorded it failing to
+collect for want of `typing_extensions`, and every recent cut was validated with the shared venv. No test count is quoted here on purpose - see the `OFFLINE-VALIDATED` line in the
 matching RELEASES.toml block for what each release actually ran. Live-state tests load the repo-relative `quam_state/` (hermetic — no
 `~/.qualibrate` dependency).
 

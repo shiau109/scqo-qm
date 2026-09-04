@@ -87,11 +87,13 @@ probe. These two bite hardest:
 Run with the venv interpreter directly:
 
 ```bash
-.venv-qm/bin/python -m pytest tests/ -q
+.venv-qm/bin/python -m pytest tests/ -q          # Windows: .venv-qm\Scripts\python.exe
 ```
 
 Avoid bare `uv run` — its sync would rebuild the env from `pyproject.toml` and displace
-the lockfile's pin authority. `uv run --no-sync` is the acceptable alternative. The suite
+the lockfile's pin authority. `uv run --no-sync` helps only with `UV_PROJECT_ENVIRONMENT`
+pointed at `.venv-qm`; by default it still targets `scqo-qm/.venv`, which is not a thing
+this repo has. Which environment for which repo: [ENVIRONMENTS.md](ENVIRONMENTS.md). The suite
 is small enough that the **full run is the targeted run**; run it before every commit.
 
 **This repo has no CI** — its git-sourced dependencies and pinned py3.11 lockfile make it
