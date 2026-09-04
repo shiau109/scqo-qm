@@ -1,6 +1,6 @@
 [project]
 name = "scqo-qm"
-version = "3.8.2"
+version = "3.9.0"
 description = "Quantum Machines backend for the scqo instrument-agnostic experiment API + vendored official qualibrate calibrations"
 readme = "README.md"
 license = { text = "BSD-3-Clause" }
