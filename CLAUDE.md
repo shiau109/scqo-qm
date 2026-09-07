@@ -27,14 +27,19 @@ scqo_qm/
                          #   CHANNEL KIND (QMDriveChannel/QMReadoutChannel/QMFluxChannel)
                          #   + QMQubitPair (composite view over the QUAM qubit_pair);
                          #   acquire()/preview() live here
-    fieldmap.py          # declarative neutral->vendor field catalog (pure data, per channel kind)
+    fieldmap.py          # declarative neutral->vendor field catalog (pure data, per channel
+                         #   kind) + VENDOR_ONLY, whose coupled/edit/counterpart carry the
+                         #   OPERATIONAL half of a hand edit (what moves with it, what to
+                         #   satisfy first, Qblox's name for it) + OPERATOR_COMMANDS, the
+                         #   two CLIs below. Both inventories render in `scqo state --fields`
     roster_gen.py        # roster_toml_for(machine): derive a schema-3 roster from a live QUAM
                          #   tree (test fixtures + scripts/check_real_config.py; the REAL roster
                          #   is <data_root>/<device>/components.toml)
     _distortion.py       # flux-distortion facts -> exponential-filter arithmetic (pure)
     apply_distortion.py  # operator CLI: python -m scqo_qm.backend.apply_distortion
                          #   (QMBackend.distortion_apply_command hands scqo's two
-                         #   cryoscopes this command line as their writeback hint)
+                         #   cryoscopes this command line as their writeback hint;
+                         #   also listed by `scqo state --fields`)
     close_qm.py          # operator CLI: python -m scqo_qm.backend.close_qm - halt
                          #   jobs + close open QMs when a dead session still holds
                          #   the cluster's locks (QMBackend.close_qm does the work).
@@ -45,6 +50,9 @@ scqo_qm/
                          #   and there is nothing to hand back before a prompt. This
                          #   door is for a session that DIED mid-job. (scqo-qblox
                          #   implements the hook - it has no disconnect at all.)
+                         #   Listed by `scqo state --fields`, which is the only
+                         #   place an operator can DISCOVER it - `scqo -h` cannot
+                         #   show a command that is not a scqo subcommand.
   experiments/
     __init__.py          # one import line per experiment module so @register runs (manual;
                          #   tests/test_experiment_registration.py enforces completeness both

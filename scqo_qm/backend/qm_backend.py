@@ -42,7 +42,7 @@ from scqo.device import (
     make_view_base,
 )
 from scqo.entities import Channel, Composite
-from scqo.fieldmap import Unrealized, VendorBinding, VendorOnly
+from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
 from scqo_qm.experiments._coupler_knob import find_coupler_pulse
@@ -50,6 +50,7 @@ from scqo_qm.backend.fieldmap import (
     FIELD_BINDINGS,
     OP_KNOB_BINDINGS,
     OP_KNOB_UNREALIZED,
+    OPERATOR_COMMANDS,
     UNREALIZED,
     VENDOR_ONLY,
 )
@@ -941,6 +942,16 @@ class QMBackend(Backend):
     def vendor_only(self) -> dict[str, VendorOnly]:
         """QM-unique calibration knobs, vendor-owned (see fieldmap)."""
         return dict(VENDOR_ONLY)
+
+    def operator_commands(self) -> tuple[OperatorCommand, ...]:
+        """This driver's vendor operator CLIs (see fieldmap) — the other half of
+        "what can I reach on THIS instrument that is not a scqo command".
+
+        The tuple is returned as-is, unlike ``vendor_only``'s defensive
+        ``dict()``: a tuple of frozen dataclasses is already immutable, and
+        keeping the same object keeps the tests' unbound equality check exact.
+        """
+        return OPERATOR_COMMANDS
 
     def _drive_views(self, targets: list[str]) -> dict[str, EntityView]:
         """Every run target's DEFAULT drive view, keyed by channel name.

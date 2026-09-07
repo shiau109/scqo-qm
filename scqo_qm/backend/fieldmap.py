@@ -32,7 +32,7 @@ Rendered by ``scqo state --fields``; strings reach lab consoles, keep them ASCII
 
 from __future__ import annotations
 
-from scqo.fieldmap import Unrealized, VendorBinding, VendorOnly
+from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
     "drive": {
@@ -330,26 +330,27 @@ OP_KNOB_UNREALIZED: dict[str, Unrealized] = {
 VENDOR_ONLY: dict[str, VendorOnly] = {
     "readout_length": VendorOnly(
         path="q.resonator.operations['readout'].length", unit="ns", kind="realizer",
-        doc="readout pulse length - realizes the TRACKED readout_duration_s "
-            "(a direct edit silently de-calibrates it; the governed write is "
-            "scqo set QUBIT.readout_duration_s=...). The integration window is "
-            "NOT fused to it: readout_integration_s owns the weights support "
-            "(default weights only LOOK fused - they span the pulse by reference)"),
+        doc="readout pulse length - realizes the TRACKED readout_duration_s. The "
+            "integration window is NOT fused to it: readout_integration_s owns "
+            "the weights support (default weights only LOOK fused - they span "
+            "the pulse by reference)",
+        edit="scqo set QUBIT.readout_duration_s=... - a direct edit silently "
+             "de-calibrates it"),
     "readout_integration_weights": VendorOnly(
         path="q.resonator.operations['readout'].integration_weights", unit="",
         kind="realizer",
         doc="integration-weights list - its nonzero SUPPORT realizes the "
-            "TRACKED readout_integration_s (governed write: scqo set "
-            "QUBIT.readout_integration_s=...; the setter writes constant "
-            "zero-padded weights). The SHAPE within the window stays vendor "
-            "territory (a future weight-optimization node may write it; any "
-            "later window write rebuilds constant weights)"),
+            "TRACKED readout_integration_s. The SHAPE within the window stays "
+            "vendor territory (a future weight-optimization node may write it; "
+            "any later window write rebuilds constant weights)",
+        edit="scqo set QUBIT.readout_integration_s=... - the setter writes "
+             "constant zero-padded weights"),
     "time_of_flight": VendorOnly(
         path="q.resonator.time_of_flight", unit="ns", kind="vendor",
         doc="acquisition latency compensation - aligns the instrument's receive "
             "path with its own transmit path. The TOF measurement's product is "
-            "written HERE, in NANOSECONDS, offline - never a neutral field. "
-            "Qblox counterpart: measure.acq_delay (s)"),
+            "written HERE, in NANOSECONDS, offline - never a neutral field",
+        counterpart="measure.acq_delay (s)"),
     # NOTE: depletion_time is no longer VendorOnly - it REALIZES the tracked
     # readout_depletion_s (binding above). It was a hand-set policy value sitting
     # at QUAM's 16 ns default with nothing governing it, while QUAM spent it in
@@ -362,60 +363,108 @@ VENDOR_ONLY: dict[str, VendorOnly] = {
         doc="readout LO - the MW-FEM upconverter, PORT-level (state.json "
             "ports.mw_outputs.<con>.<fem>.<port>) and shared by everything on "
             "that output; many LO/IF splits give the SAME RF, so SCQO owns only "
-            "the RF (readout_freq_hz) and never moves the LO in a chain solve. "
-            "Move it so IF = RF - LO stays in range, the port band must cover "
-            "the target, and downconverter_frequency MUST move with it or "
-            "demodulation breaks. Qblox counterpart: modulation_frequencies "
-            "lo_freq"),
+            "the RF (readout_freq_hz) and never moves the LO in a chain solve",
+        coupled=("downconverter_frequency", "readout_band"),
+        edit="move it so IF = RF - LO stays in range and readout_band covers "
+             "the target; downconverter_frequency MUST move with it or "
+             "demodulation breaks",
+        counterpart="modulation_frequencies lo_freq"),
     "drive_upconverter_frequency": VendorOnly(
         path="q.xy.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
-        doc="drive LO - PORT-level MW-FEM upconverter, shared; keep "
-            "IF = f_01 - LO in range and the port band matching"),
+        doc="drive LO - PORT-level MW-FEM upconverter, shared by everything on "
+            "that output",
+        coupled=("drive_band",),
+        edit="keep IF = f_01 - LO in range and drive_band matching"),
     "downconverter_frequency": VendorOnly(
         path="q.resonator.opx_input.downconverter_frequency", unit="Hz", kind="vendor",
-        doc="receive-side downconversion LO on the MW input port (chipA: "
-            "6.06 GHz, equal to the readout upconverter) - MUST track "
-            "readout_upconverter_frequency or demodulation breaks; PORT-level, "
-            "band-constrained. Qblox has no separate knob (NCO handles it)"),
+        doc="receive-side downconversion LO on the MW input port, equal to the "
+            "readout upconverter - PORT-level. No example value quoted on "
+            "purpose: the old 'chipA: 6.06 GHz' had rotted two revisions deep "
+            "(the repo's dev state runs 5.95 GHz, the live chipA config "
+            "5.1 GHz) while the EQUALITY, which is the durable claim, held "
+            "throughout",
+        coupled=("readout_upconverter_frequency", "downconverter_band"),
+        edit="it MUST track readout_upconverter_frequency or demodulation "
+             "breaks, and downconverter_band must cover it",
+        counterpart="none - Qblox has no separate knob (NCO handles it)"),
+    "readout_band": VendorOnly(
+        path="q.resonator.opx_output.band", unit="", kind="vendor",
+        doc="which MW-FEM Nyquist band the READOUT output port runs in "
+            "(chipA: 2) - a PORT-level hardware MODE chosen so the band covers "
+            "the readout LO, not a calibration outcome. broadband_resonator_"
+            "spectroscopy reads it live to derive the LO limits it may step "
+            "within. Coverage is the INSTRUMENT's call: a band that does not "
+            "cover the frequency comes back as a QM error, so no table here "
+            "second-guesses it",
+        coupled=("readout_upconverter_frequency",),
+        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools. The MW-FEM pairs ports (2,3) (4,5) (6,7) and BOTH "
+             "ports of a pair must carry the same band (see experiments/"
+             "broadband_qubit_spectroscopy.py::_partner_port_id); "
+             "quam_config/populate_quam_lf_mw_fems.py::get_band(freq) is the "
+             "derivation the lab seeds from"),
+    "drive_band": VendorOnly(
+        path="q.xy.opx_output.band", unit="", kind="vendor",
+        doc="the same PORT-level hardware mode on the DRIVE output port "
+            "(chipA: 1), chosen so the band covers the drive LO. "
+            "broadband_qubit_spectroscopy WRITES it run-scoped - one value per "
+            "frequency segment - and restores the original in a finally. "
+            "Coverage is the INSTRUMENT's call: a band that does not cover the "
+            "frequency comes back as a QM error",
+        coupled=("drive_upconverter_frequency",),
+        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools; BOTH ports of a MW-FEM pair (2,3) (4,5) (6,7) must "
+             "carry the same band"),
+    "downconverter_band": VendorOnly(
+        path="q.resonator.opx_input.band", unit="", kind="vendor",
+        doc="which MW-FEM band the readout INPUT port runs in (chipA: 2, "
+            "matching the output side) - PORT-level; the receive band must "
+            "cover downconverter_frequency, which the instrument enforces",
+        coupled=("downconverter_frequency",),
+        edit="state.json ports.mw_inputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools"),
     "full_scale_power_dbm": VendorOnly(
         path="q.resonator.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
         doc="the coarse readout power knob (grid -11..+16 in 3 dB steps, "
             "PORT-level - shared like the LO) - it REALIZES the tracked "
-            "readout_power_dbm (binding above). Change power with "
-            "`scqo set QUBIT.readout_power_dbm=...` (solves the chain, keeps "
-            "readout_amp coupled, recorded); a direct edit silently "
-            "de-calibrates the absolute power, and any later readout_power_dbm "
-            "write re-solves and overwrites a forced value"),
+            "readout_power_dbm (binding above)",
+        edit="scqo set QUBIT.readout_power_dbm=... (solves the chain, keeps "
+             "readout_amp coupled, recorded); a direct edit silently "
+             "de-calibrates the absolute power, and any later readout_power_dbm "
+             "write re-solves and overwrites a forced value"),
     "drive_full_scale_power_dbm": VendorOnly(
         path="q.xy.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
         doc="the coarse DRIVE power knob (grid -11..+16 in 3 dB steps, "
             "PORT-level - shared by every xy operation) - it REALIZES the "
-            "tracked drive_power_dbm (binding above). Change power with "
-            "`scqo set QUBIT.drive_power_dbm=...` (solves the chain, keeps "
-            "drive_amp coupled, recorded); a direct edit silently re-scales "
-            "what every stored pi_amp AND the absolute drive power mean. "
-            "Qblox counterpart: drive-port output_att"),
+            "tracked drive_power_dbm (binding above)",
+        edit="scqo set QUBIT.drive_power_dbm=... (solves the chain, keeps "
+             "drive_amp coupled, recorded); a direct edit silently re-scales "
+             "what every stored pi_amp AND the absolute drive power mean",
+        counterpart="drive-port output_att"),
     "x180_length": VendorOnly(
         path="q.xy.operations['x180'].length", unit="ns", kind="realizer",
         doc="pi/x180 pulse length - it REALIZES the tracked pi_duration_s "
             "(promoted to a neutral drive knob in the greenfield catalog; "
-            "binding above). The governed write is scqo set "
-            "QUBIT.pi_duration_s=...; a direct edit silently de-calibrates the "
-            "stored pi_amp with it. Multiple of 4 ns (chipA: 32 ns here vs "
-            "200 ns on Qblox - genuinely per-chain calibrated)"),
+            "binding above). Multiple of 4 ns (chipA: 32 ns here vs 200 ns on "
+            "Qblox - genuinely per-chain calibrated)",
+        edit="scqo set QUBIT.pi_duration_s=... - a direct edit silently "
+             "de-calibrates the stored pi_amp with it",
+        counterpart="rxy.duration (s, no grid guard there)"),
     "x90_length": VendorOnly(
         path="q.xy.operations['x90_DragCosine'].length", unit="ns", kind="vendor",
         doc="pi/2 pulse length - a PER-GATE vendor value, deliberately NOT "
             "locked to the tracked pi_duration_s (the neutral knob is the pi "
-            "pulse's length only); edit it directly when a chip wants a "
-            "different x90 envelope"),
+            "pulse's length only)",
+        edit="edit state.json directly when a chip wants a different x90 "
+             "envelope - nothing governs this one"),
     "drag_alpha": VendorOnly(
         path="q.xy.operations['<gate>_DragCosine'].alpha", unit="", kind="realizer",
         doc="PER-GATE DRAG coefficient (chipA: x180 -0.94, x90 -0.50). The x180 "
-            "node now REALIZES the tracked neutral drag_beta (binding above; "
-            "governed write: scqo set QUBIT.drag_beta=...); the OTHER gates' "
-            "alpha values remain vendor fine print edited directly. Qblox "
-            "counterpart: rxy.beta (derivative scale, different math convention)"),
+            "node REALIZES the tracked neutral drag_beta (binding above); the "
+            "OTHER gates' alpha values remain vendor fine print",
+        edit="scqo set QUBIT.drag_beta=... for the x180 node; the other gates' "
+             "alpha stay direct state.json edits",
+        counterpart="rxy.beta (derivative scale, different math convention)"),
     "per_gate_detuning": VendorOnly(
         path="q.xy.operations['x90_DragCosine'].detuning", unit="Hz", kind="unique",
         doc="per-gate drive detuning (chipA: -300 kHz on x90 vs 0 on x180) - "
@@ -427,36 +476,42 @@ VENDOR_ONLY: dict[str, VendorOnly] = {
         doc="which named qubit flux point idles (joint/independent/min/"
             "arbitrary/zero) - SELECTS which offset the tracked idle_flux "
             "reads and writes on q1_z. A mode switch, not a calibration "
-            "outcome; flipping it re-points idle_flux at a different stored "
-            "number, so re-seed after changing it. Under scqo it is PINNED to "
-            "'joint' (the point every probe's initialize_qpu applies) and the "
-            "backend factory refuses anything else - a declaration that "
-            "disagrees with the applied bias makes idle_flux inert"),
+            "outcome",
+        edit="PINNED: the backend factory REFUSES any value but 'joint' (the "
+             "point every probe's initialize_qpu applies) - a declaration that "
+             "disagrees with the applied bias makes idle_flux inert. Flipping "
+             "it re-points idle_flux at a different stored number, so re-seed "
+             "after changing it"),
     "coupler_flux_point": VendorOnly(
         path="qp.coupler.flux_point", unit="", kind="vendor",
         doc="which named coupler point idles (off/on/arbitrary/zero) - SELECTS "
             "which offset the tracked idle_flux reads and writes on the "
             "COUPLER mode's flux channel (q1_q2_c_z). A mode switch, not a "
-            "calibration outcome"),
+            "calibration outcome",
+        edit="PINNED to 'off' by the same factory audit; flipping it re-points "
+             "the coupler's idle_flux at a different stored number"),
     "coupler_decouple_offset": VendorOnly(
         path="qp.coupler.decouple_offset", unit="V", kind="realizer",
         doc="the interaction-OFF coupler standing bias (pair_zz_coupler's "
             "product - the ZZ zero crossing). It REALIZES the tracked "
             "idle_flux of the coupler mode's flux channel while "
             "coupler.flux_point == 'off' (the old pair-level coupler_decouple_v "
-            "neutral field is GONE - the governed write is now "
-            "scqo set <coupler>_z.idle_flux=...)"),
+            "neutral field is GONE)",
+        edit="scqo set <coupler>_z.idle_flux=..."),
     "coupler_interaction_offset": VendorOnly(
         path="qp.coupler.interaction_offset", unit="V", kind="realizer",
         doc="the interaction-ON coupler standing bias (gate operating point). "
             "It REALIZES the tracked idle_flux of the coupler mode's flux "
-            "channel while coupler.flux_point == 'on'. A per-GATE operating "
-            "point is NOT this: that is the composite knob "
-            "<operation>_coupler_flux (bound above)"),
+            "channel while coupler.flux_point == 'on' - which the factory pins "
+            "OFF, so there is no reachable governed write and `edit` is "
+            "deliberately empty. A per-GATE operating point is NOT this: that "
+            "is the composite knob <operation>_coupler_flux (bound above)"),
     "coupler_arbitrary_offset": VendorOnly(
         path="qp.coupler.arbitrary_offset", unit="V", kind="realizer",
         doc="free-form coupler bias for exploratory work - realizes idle_flux "
-            "while coupler.flux_point == 'arbitrary'"),
+            "while coupler.flux_point == 'arbitrary', which the factory pins "
+            "OFF, so there is no reachable governed write and `edit` is "
+            "deliberately empty"),
     "coupler_settle_time": VendorOnly(
         path="qp.coupler.settle_time", unit="ns", kind="vendor",
         doc="coupler flux settle wait - an instrument-response policy value, "
@@ -491,3 +546,44 @@ VENDOR_ONLY: dict[str, VendorOnly] = {
             "artifact, DEAD to SCQO per the placement rule (never read, never "
             "written by it); portable traces live in run records"),
 }
+
+#: The vendor OPERATOR CLIs this driver ships. They are not scqo subcommands
+#: (scqo run <name> is the single entry point, and a QM-specific verb could only
+#: be refused on Qblox), so `scqo -h` cannot list them - `scqo state --fields`
+#: renders this inventory instead, which is the only place an operator discovers
+#: them rather than memorizing them. Declared HERE and not in qm_backend.py
+#: because it is pure declarative vendor metadata of the same class as
+#: VENDOR_ONLY, and this module's import guard is what proves it stays
+#: vendor-free. Every string below compresses the target module's own docstring.
+OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
+    OperatorCommand(
+        name="apply_distortion",
+        command="python -m scqo_qm.backend.apply_distortion --target <target> "
+                "[--run <run_id>]",
+        doc="Write accepted cryoscope taps (distortion_amp / distortion_tau_s "
+            "are FACTS - accepting them records the measurement and pushes "
+            "NOTHING) into the target's z-output exponential filter. Run it "
+            "after a cryoscope run's facts are accepted; it is the same command "
+            "the cryoscope writeback hint prints for you, run-addressed. Fully "
+            "offline - it never opens a QuantumMachinesManager.",
+        options="--run RUN_ID (taps from that run's fit - the iteration door)  "
+                "--extend (refine a residual instead of overwriting)  "
+                "--form {sum,cascade} (QOP >= 3.3 / 3.4.1)  "
+                "--clear (fresh-line reset before a clean-slate "
+                "characterization)  --dry-run  --config PATH"),
+    OperatorCommand(
+        name="close_qm",
+        command="python -m scqo_qm.backend.close_qm",
+        doc="Halt running jobs and close the open Quantum Machines on the "
+            "cluster serving the ACTIVE scqo device/setup - the recovery door "
+            "when a crashed or abandoned session still holds the cluster's "
+            "locks (symptom: a job that stalls forever, or an open that never "
+            "returns). NOT a wedged-gateway fix: a cluster in "
+            "DEADLINE_EXCEEDED needs a restart from its web UI.",
+        options="--qm-id ID (just this one)  --dry-run (list what is open, "
+                "close nothing)  --config PATH",
+        caution="DESTRUCTIVE and there is NO confirmation prompt - halting a "
+                "job discards data it had not yet streamed out, including a "
+                "measurement someone else started. Run --dry-run first unless "
+                "you know the cluster is idle."),
+)
