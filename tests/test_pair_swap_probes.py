@@ -279,3 +279,109 @@ def test_empty_sweep_is_refused():
     with pytest.raises(ValueError, match="empty"):
         resolve_amplitudes([_pair()], np.array([]),
                            amp_mode="absolute", flux_role="control")
+
+
+# --------------------------------------------------------------------------
+# resolve_coupler_plays — the OPTIONAL coupler pulse (the QCQ chevron)
+#
+# Setting coupler_flux_v turns this map into the phase-free QCQ survey: one
+# pulse, so nothing accumulates a between-swap phase the way qc_n_swap_amp and
+# pair_swap_angle do. It costs the baking branch, so every refusal below is
+# about the two things that then have to hold — a stretchable (constant)
+# coupler waveform, and a duration axis on the 4 ns clock.
+
+from quam.components import pulses as _quam_pulses            # noqa: E402
+
+from scqo_qm.components.pulses import FlatTopCosinePulse      # noqa: E402
+from scqo_qm.experiments.pair_swap_chevron import resolve_coupler_plays  # noqa: E402
+
+#: on the 4 ns grid and >= 16 ns, i.e. what scqo builds for a coupled run
+GRID_TIMES = np.array([16, 20, 40, 100], dtype=int)
+
+
+def _coupler(amplitude=0.1, *, name="p1_c", shaped=False):
+    pulse = (FlatTopCosinePulse(length=40, amplitude=amplitude, edge_width=8)
+             if shaped else _quam_pulses.SquarePulse(length=40, amplitude=amplitude))
+    return SimpleNamespace(name=name, opx_output=None,
+                           operations={"partial_swap_square": pulse})
+
+
+def _coupled_pair(name="p1", *, coupler=None, macro="partial_swap",
+                  flux_pulse="partial_swap_square", **kwargs):
+    """``_pair`` plus the coupler and macro the coupler path resolves through."""
+    qp = _pair(name, **kwargs)
+    qp.coupler = _coupler() if coupler is None else coupler
+    qp.macros = {macro: SimpleNamespace(flux_pulse=flux_pulse)}
+    return qp
+
+
+def test_no_coupler_amplitude_leaves_the_coupler_alone():
+    """The falsy answer IS the historical chevron: a directly-coupled pair has
+    no coupler to declare, and every run before this knob existed took it."""
+    assert resolve_coupler_plays([_pair()], None, "partial_swap", GRID_TIMES) == {}
+
+
+def test_the_scale_divides_by_the_macros_own_coupler_pulse():
+    """The SAME conversion ISwapImplementation.apply does, so a coupler
+    amplitude found here is the one qc_unidirectional_trotter's
+    swap_coupler_flux wants — no unit translation in between."""
+    plays = resolve_coupler_plays([_coupled_pair()], 0.05, "partial_swap", GRID_TIMES)
+    coupler, pulse_name, scale = plays["p1"]
+    assert pulse_name == "partial_swap_square"
+    assert coupler.name == "p1_c"
+    assert scale == pytest.approx(0.05 / 0.1)
+
+
+@pytest.mark.parametrize("times,why", [
+    (np.array([16, 18, 20]), "18"),        # off the 4 ns clock
+    (np.array([8, 16, 20]), "8"),          # under the 16 ns floor
+])
+def test_a_duration_the_coupler_cannot_be_stretched_to_is_refused(times, why):
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([_coupled_pair()], 0.05, "partial_swap", times)
+    assert why in str(err.value)
+    assert "min_swap_time_ns" in str(err.value), "name the knob to lower"
+
+
+def test_a_shaped_coupler_waveform_is_refused_by_name():
+    """play(duration=) stretches a constant pulse and ZERO-PADS a shaped one, so
+    a raised-cosine coupler would play its native 40 ns inside every window and
+    the map would be of a pulse nobody asked for."""
+    qp = _coupled_pair(coupler=_coupler(shaped=True))
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([qp], 0.05, "partial_swap", GRID_TIMES)
+    assert "FlatTopCosinePulse" in str(err.value)
+    assert "SquarePulse" in str(err.value)
+
+
+def test_a_coupler_baked_at_zero_is_refused_here_too():
+    """It is the DIVISOR of the volts->amplitude_scale conversion, so a zero is
+    unsettable rather than merely weak — the shared _coupler_knob refusal."""
+    qp = _coupled_pair(coupler=_coupler(0.0))
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([qp], 0.05, "partial_swap", GRID_TIMES)
+    assert "register_flattop_cosine.py" in str(err.value)
+
+
+def test_a_missing_macro_is_refused_by_name():
+    qp = _coupled_pair(macro="iswap")
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([qp], 0.05, "partial_swap", GRID_TIMES)
+    assert "no macro 'partial_swap'" in str(err.value)
+    assert "iswap" in str(err.value), "say what the pair DOES carry"
+
+
+def test_a_pair_with_no_coupler_is_refused_by_name():
+    qp = _coupled_pair()
+    qp.coupler = None
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([qp], 0.05, "partial_swap", GRID_TIMES)
+    assert "no coupler" in str(err.value)
+
+
+def test_volts_past_the_rail_are_refused():
+    """The coupler pulse rides the standing bias, so the RELATIVE frame check
+    is the right one — and it is the shared _flux_limits one, not a copy."""
+    with pytest.raises(ValueError) as err:
+        resolve_coupler_plays([_coupled_pair()], 5.0, "partial_swap", GRID_TIMES)
+    assert str(_DAC_RAIL) in str(err.value) or "amplitude_scale" in str(err.value)

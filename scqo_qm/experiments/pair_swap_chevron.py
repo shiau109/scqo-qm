@@ -27,6 +27,17 @@ Amplitude sweep (`amp_mode`), mirroring `pair_swap_flux_map`:
 `flux_role` selects which qubit's z line carries the flux pulse; it defaults to
 the control qubit, which is what this probe used to hardwire.
 
+`coupler_amp` (volts, optional) holds the pair's COUPLER at a fixed amplitude for
+the same window, playing the coupler-side waveform of the named pair macro
+`swap_operation` -- so on a QCQ pair, where the swap only exists while the
+coupler pulse plays, the arch is taken AT that coupler setting. It rescales the
+same way the macro itself does (`cplr_amp / stored amplitude`), so a value found
+here is the value `qc_unidirectional_trotter`'s `swap_coupler_flux` wants.
+Engaging it SWITCHES OFF the baking branch: a baked segment plays on ONE
+element, so the coupler could not be sample-aligned with it, and the whole
+duration axis is therefore restricted to stretched `play(duration=)` on the 4 ns
+clock. scqo builds the axis on that grid; this builder refuses anything else.
+
 QM single-excitation swap chevron for scqo — supplies ``probe()``.
 
 Parameters, the record-only map summary and the (absent) writeback are
@@ -36,7 +47,10 @@ reduction comes from :class:`JointPopulationMixin`. scqo sweeps
 QM builder sweeps a QUA amplitude scale x a 1 ns-granular pulse duration
 (baked below 4 ns), so this adapter drives the probe in its ``amp_mode
 ="absolute"`` mode and maps the neutral high/low roles onto the vendor's
-control/target.
+control/target. ``coupler_flux_v`` / ``swap_operation`` pass straight through:
+when the first is set the builder also plays that macro's coupler pulse at that
+fixed amplitude and the baking branch is not built, which is why scqo puts the
+duration axis on the 4 ns grid for those runs.
 
 Unlike every other QM adapter here, ``probe()`` ACQUIRES and returns a ready
 ``xr.Dataset``: the program only runs against the probe's own baked config
@@ -56,7 +70,10 @@ from qm.qua import *
 from qualang_tools.bakery import baking
 from qualang_tools.loops import from_array
 
+from quam.components import pulses as quam_pulses
+
 from scqo_qm.experiments._amp_limits import MAX_AMP_SCALE
+from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._flux_limits import (
     check_flux_pulse_relative,
@@ -219,6 +236,72 @@ def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str
     return qua_amps, base_levels, denoms
 
 
+#: QM plays a stretched pulse in whole 4 ns clock cycles, with a 4-cycle floor.
+_CLOCK_NS = 4
+_MIN_FLUX_NS = 16
+
+
+def resolve_coupler_plays(qubit_pairs, coupler_amp, swap_operation: str,
+                          times_cycles) -> dict:
+    """``{pair name: (coupler element, pulse name, amplitude_scale)}``, or ``{}``.
+
+    ``{}`` -- the falsy answer -- is a run that leaves the coupler alone, which is
+    every chevron this probe played before the knob existed. Otherwise every pair
+    contributes one entry and the map is truthy, so callers branch on it directly.
+
+    Three kinds of refusal, all BEFORE any QUA is built, each with its own fix:
+
+    * the shared :func:`guard_coupler_amplitudes` covers the macro (missing), the
+      pair (no coupler), the macro's coupler side (no playable pulse), the stored
+      amplitude (baked at zero -- unsettable, since it is the divisor) and the
+      port (rail, idle sum, and QUA's amplitude_scale bound);
+    * a SHAPED coupler waveform is refused here. ``play(duration=)`` stretches a
+      constant pulse and ZERO-PADS everything else, so a raised-cosine coupler
+      would silently play its native length inside a longer window and the map
+      would be of a pulse nobody asked for;
+    * a duration off the 4 ns grid (or under 16 ns) is refused for the same
+      reason the bakes are skipped: with the coupler engaged there is no
+      sub-clock path left. scqo already builds the axis on that grid, so this is
+      the vendor-side backstop, not the primary check.
+
+    The scale is a Python float and stays a compile-time constant: the coupler
+    amplitude is FIXED for the whole map, unlike the member's swept one.
+    """
+    if coupler_amp is None:
+        return {}
+    amp = float(coupler_amp)
+    bad = [int(t) for t in np.asarray(times_cycles, dtype=int)
+           if int(t) % _CLOCK_NS or int(t) < _MIN_FLUX_NS]
+    if bad:
+        raise ValueError(
+            f"coupler_amp is set, so every duration must be a whole multiple of "
+            f"{_CLOCK_NS} ns and at least {_MIN_FLUX_NS} ns -- a coupler pulse can "
+            f"only be STRETCHED, never baked sub-clock alongside the member's. "
+            f"Off-grid: {sorted(set(bad))[:8]}. Raise min_swap_time_ns to "
+            f"{_MIN_FLUX_NS} or leave coupler_flux_v unset.")
+    plays = {}
+    for qp in qubit_pairs:
+        coupler, pulse_name = guard_coupler_amplitudes(
+            qp, swap_operation, [amp],
+            why=" This map holds it at a fixed amplitude while it sweeps the "
+                "member's flux pulse, so the arch is the one that pair has AT "
+                "that coupler setting.",
+            label=f"{qp.name} macro {swap_operation!r} coupler_flux_v")
+        pulse = coupler.operations[pulse_name]
+        if not isinstance(pulse, quam_pulses.SquarePulse):
+            raise ValueError(
+                f"{qp.name}: the coupler pulse {pulse_name!r} of macro "
+                f"{swap_operation!r} is a {type(pulse).__name__}, not a SquarePulse. "
+                f"This map overrides the pulse DURATION, which stretches a constant "
+                f"waveform but ZERO-PADS a shaped one -- the coupler would play its "
+                f"native length inside every window and the map would be of a pulse "
+                f"you did not ask for. Use a macro whose coupler pulse is square "
+                f"(register one with quam_config/register_swap_macro.py), or leave "
+                f"coupler_flux_v unset.")
+        plays[qp.name] = (coupler, pulse_name, amp / float(pulse.amplitude))
+    return plays
+
+
 def baked_waveform(qubit, baked_config, base_level: float = 0.5, max_samples: int = 16):
     """Create truncated baked waveforms for the chevron flux pulse.
 
@@ -254,6 +337,8 @@ def build_program(
     amp_mode: str = "prefactor",
     flux_role: str = "control",
     drive_role: str = "control",
+    coupler_amp: Optional[float] = None,
+    swap_operation: str = "partial_swap",
     simulate: bool = False,
 ):
     """Build the single-excitation flux-chevron QUA program.
@@ -269,12 +354,21 @@ def build_program(
     of qubit pairs (`qubit_pairs.batch()` / `.get_names()`). `flux_role` selects which
     qubit of each pair carries the flux pulse and `drive_role` which receives the x180
     ("control" or "target"); the two are independent.
+
+    `coupler_amp` is the FIXED coupler amplitude in absolute volts, or None to
+    leave the coupler alone (the historical behaviour). When it is set, the
+    coupler-side pulse of `swap_operation` plays for the same window on every
+    pair and every duration must be a whole number of 4 ns clock cycles -- the
+    baked sub-clock branch is not built at all, because a bake carries one
+    element and the coupler would drift out of it.
     """
     num_qubit_pairs = len(qubit_pairs)
 
     qua_amps, base_levels, denoms = resolve_amplitudes(
         qubit_pairs, amplitudes, amp_mode=amp_mode, flux_role=flux_role
     )
+    coupler_plays = resolve_coupler_plays(
+        qubit_pairs, coupler_amp, swap_operation, times_cycles)
 
     sweep_axes = {
         "qubit_pair": xr.DataArray(qubit_pairs.get_names()),
@@ -289,8 +383,11 @@ def build_program(
 
     baked_config = machine.generate_config()
 
-    # Pre-compute the baked short segments (1..16 samples) for each flux qubit in the pairs.
-    baked_signals = {
+    # Pre-compute the baked short segments (1..16 samples) for each flux qubit in
+    # the pairs -- but ONLY on the coupler-free path. A bake plays one element, so
+    # with the coupler engaged those segments are unreachable (the duration axis is
+    # on the 4 ns grid) and baking them would upload waveforms nothing can play.
+    baked_signals = {} if coupler_plays else {
         _flux_qubit(qp, flux_role).name: baked_waveform(
             _flux_qubit(qp, flux_role), baked_config,
             base_level=base_levels[qp.name], max_samples=16
@@ -352,51 +449,77 @@ def build_program(
 
                             align()
 
-                            # For the first 16ns we play baked pulses exclusively. Loop the time index until 16.
-                            with if_(t <= 16):
-                                with switch_(t):
-                                    # Switch case to select the baked pulse with duration t ns
-                                    for j in range(1, 17):
-                                        with case_(j):
-                                            baked_signals[fq.name][j - 1].run(
-                                                amp_array=[(fq.z.name, a)]
-                                            )
+                            if not coupler_plays:
+                                # For the first 16ns we play baked pulses exclusively. Loop the time index until 16.
+                                with if_(t <= 16):
+                                    with switch_(t):
+                                        # Switch case to select the baked pulse with duration t ns
+                                        for j in range(1, 17):
+                                            with case_(j):
+                                                baked_signals[fq.name][j - 1].run(
+                                                    amp_array=[(fq.z.name, a)]
+                                                )
 
-                            # For pulse durations above 16ns we combine baking with regular play statements.
-                            with else_():
-                                # We calculate the closest lower multiple of 4 of the time index
-                                assign(t_cycles, t >> 2)  # Right shift by 2 is a quick way to divide by 4
-                                # Calculate the duration to add to pulse multiple of 4.
-                                assign(t_left_ns, t - (t_cycles << 2))  # left shift by 2 to multiply by 4
-                                # Switch case with the 4 possible sequences:
-                                with switch_(t_left_ns):
-                                    # Play only the pulse multiple of 4
-                                    with case_(0):
-                                        align()
-                                        p = base_levels[qp.name]
-                                        denom = denoms[qp.name]
-                                        scale = (p / denom) * a
-                                        fq.z.play(
-                                            "const",
-                                            duration=t_cycles,
-                                            amplitude_scale=scale,
-                                        )
-                                    # Play the pulse multiple of 4 followed by the baked pulse of the missing duration
-                                    for j in range(1, 4):
-                                        with case_(j):
+                                # For pulse durations above 16ns we combine baking with regular play statements.
+                                with else_():
+                                    # We calculate the closest lower multiple of 4 of the time index
+                                    assign(t_cycles, t >> 2)  # Right shift by 2 is a quick way to divide by 4
+                                    # Calculate the duration to add to pulse multiple of 4.
+                                    assign(t_left_ns, t - (t_cycles << 2))  # left shift by 2 to multiply by 4
+                                    # Switch case with the 4 possible sequences:
+                                    with switch_(t_left_ns):
+                                        # Play only the pulse multiple of 4
+                                        with case_(0):
                                             align()
                                             p = base_levels[qp.name]
                                             denom = denoms[qp.name]
                                             scale = (p / denom) * a
-                                            with strict_timing_():
-                                                fq.z.play(
-                                                    "const",
-                                                    duration=t_cycles,
-                                                    amplitude_scale=scale,
-                                                )
-                                                baked_signals[fq.name][j - 1].run(
-                                                    amp_array=[(fq.z.name, a)]
-                                                )
+                                            fq.z.play(
+                                                "const",
+                                                duration=t_cycles,
+                                                amplitude_scale=scale,
+                                            )
+                                        # Play the pulse multiple of 4 followed by the baked pulse of the missing duration
+                                        for j in range(1, 4):
+                                            with case_(j):
+                                                align()
+                                                p = base_levels[qp.name]
+                                                denom = denoms[qp.name]
+                                                scale = (p / denom) * a
+                                                with strict_timing_():
+                                                    fq.z.play(
+                                                        "const",
+                                                        duration=t_cycles,
+                                                        amplitude_scale=scale,
+                                                    )
+                                                    baked_signals[fq.name][j - 1].run(
+                                                        amp_array=[(fq.z.name, a)]
+                                                    )
+                            else:
+                                # The COUPLED path: no baking, so no sub-clock
+                                # branch and no `t_left_ns` remainder -- the axis
+                                # is on the 4 ns grid (resolve_coupler_plays
+                                # refuses anything else), so `t >> 2` IS the
+                                # duration. The two plays are issued back to back
+                                # with no align between them, so they start on the
+                                # same edge on their two elements -- the same
+                                # shape pair_swap_flux_map uses.
+                                align()
+                                assign(t_cycles, t >> 2)
+                                p = base_levels[qp.name]
+                                denom = denoms[qp.name]
+                                scale = (p / denom) * a
+                                coupler, coupler_pulse, c_scale = coupler_plays[qp.name]
+                                fq.z.play(
+                                    "const",
+                                    duration=t_cycles,
+                                    amplitude_scale=scale,
+                                )
+                                coupler.play(
+                                    coupler_pulse,
+                                    duration=t_cycles,
+                                    amplitude_scale=c_scale,
+                                )
                             align()
 
                             if use_state_discrimination:
@@ -509,6 +632,8 @@ class QMPairSwapChevron(JointPopulationMixin, PairSwapChevron):
             amp_mode="absolute",
             flux_role=flux_role,
             drive_role=drive_role,
+            coupler_amp=self.params.coupler_flux_v,
+            swap_operation=self.params.swap_operation,
         )
         # The canonical time axis is the probe's REAL grid: re-declare it so
         # sizes and values match the raw data exactly.

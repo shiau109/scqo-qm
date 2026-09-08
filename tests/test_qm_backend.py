@@ -15,6 +15,8 @@ Three tiers:
 from pathlib import Path
 from types import SimpleNamespace
 
+import re
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -1275,6 +1277,81 @@ def test_swap_chevron_probe_builds_against_the_baked_config(machine, live_roster
     assert float(captured["sweep_axes"]["flux_amp_v"].values.max()) == pytest.approx(0.05)
 
     assert generate_qua_script(captured["prog"], captured["config"])
+
+
+def _chevron_script(machine, live_roster, monkeypatch, **params):
+    """Build the chevron against the LIVE tree and return (qua script, exp)."""
+    from qm import generate_qua_script
+
+    from scqo_qm.experiments import pair_swap_chevron as chevron_probe
+    from scqo_qm.experiments.pair_swap_chevron import QMPairSwapChevron
+
+    captured = {}
+
+    def fake_acquire(m, prog, sweep_axes, *, num_shots, timeout, log=None, config=None):
+        captured.update(prog=prog, config=config)
+        return xr.Dataset()
+
+    monkeypatch.setattr(chevron_probe, "acquire", fake_acquire)
+    exp = _swap_experiment(QMPairSwapChevron, machine, live_roster,
+                           min_flux_amp_v=0.0, max_flux_amp_v=0.05, num_amp_points=5,
+                           max_swap_time_ns=40.0, num_time_points=6,
+                           num_averages=10, **params)
+    exp.sweep_axes = exp.define_sweep()
+    exp.probe()
+    # the PROGRAM only: with the config attached, every pulse name in the tree
+    # appears in the dump and no assertion about what is PLAYED can be made
+    assert generate_qua_script(captured["prog"], captured["config"]), "must compile"
+    return generate_qua_script(captured["prog"]), exp, captured
+
+
+def test_swap_chevron_plays_the_macros_coupler_pulse_when_asked(machine, live_roster,
+                                                                monkeypatch):
+    """The QCQ path: the coupler carries the named macro's own pulse for the same
+    window, so the arch is the one that pair has AT that coupler amplitude. The
+    live tree's `partial_swap` names a SHAPED coupler pulse (refused — see the
+    test below), so point it at a square one first; that is a config fact, not a
+    property of the probe."""
+    _target, qp = _live_pair(machine)
+    monkeypatch.setattr(qp.macros["partial_swap"], "flux_pulse", "swap_01_10_square")
+
+    free, _exp, _cap = _chevron_script(machine, live_roster, monkeypatch)
+    coupled, exp, captured = _chevron_script(
+        machine, live_roster, monkeypatch, coupler_flux_v=0.1)
+
+    # DIFFERENTIAL: the coupler play appears only when it was asked for. Match
+    # the PULSE name, not the element's: QM names its pairs after the coupler,
+    # so the bare element name already occurs in a coupler-free script.
+    assert "swap_01_10_square" not in free
+    assert "swap_01_10_square" in coupled
+    plays = [ln.strip() for ln in coupled.splitlines() if "swap_01_10_square" in ln]
+    assert len(plays) == 1, plays
+    # ON the coupler element, STRETCHED (not its native length), and rescaled by
+    # its own stored amplitude — 0.1 V asked for / 0.25 V stored. That divisor is
+    # the whole point: it is the one ISwapImplementation.apply uses, so this
+    # number is what swap_coupler_flux wants on the chain.
+    assert f'"{qp.coupler.name}"' in plays[0], plays[0]
+    assert "duration=" in plays[0], plays[0]
+    assert "amp(0.4)" in plays[0], plays[0]
+
+    # the bakes are SKIPPED on this path — a baked segment plays one element, so
+    # the coupler could not stay sample-aligned with it and the axis is on the
+    # 4 ns clock instead. Nothing to add to the config, so nothing is added.
+    assert not set(captured["config"]["pulses"]) - set(machine.generate_config()["pulses"])
+    axis = exp.sweep_axes["swap_time_ns"]
+    assert axis.min() >= 16.0 and not np.any(np.round(axis).astype(int) % 4)
+
+
+def test_swap_chevron_refuses_a_shaped_coupler_pulse_on_the_live_tree(machine,
+                                                                      live_roster,
+                                                                      monkeypatch):
+    """`partial_swap` on the live pair names `flattop_cosine`, and a raised
+    cosine ZERO-PADS under a duration override instead of stretching — so it
+    would play its native length inside every window. Refused by name, with the
+    class in the message."""
+    with pytest.raises(ValueError) as err:
+        _chevron_script(machine, live_roster, monkeypatch, coupler_flux_v=0.1)
+    assert "FlatTopCosinePulse" in str(err.value)
 
 
 def test_xyz_delay_probe_builds_against_the_baked_config(machine, live_roster,
