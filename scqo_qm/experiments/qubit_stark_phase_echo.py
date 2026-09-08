@@ -34,6 +34,12 @@ FRAME/SIGN: there is no virtual-detuning ramp here (the phase is physical, from 
 Stark tone), so no cross-repo sign convention is coupled - the closing pulses are
 plain gates and the estimator anchors phi=0 at the smallest amplitude.
 
+``probe()`` also reports the stark op's BAKED amplitude per qubit
+(``probe_stark_amp``): the swept factor is a multiplier of it, and this driver is
+the only layer that can read a named operation's own amplitude, so without the
+report the run has no absolute amplitude scale. scqo turns it into the
+``digital_amp`` coordinate on the dataset.
+
 QM AC-Stark phase echo for scqo - supplies only ``probe()``. Parameters, the
 two-quadrature phase estimator and the (absent) writeback are inherited from
 ``scqo.experiments.QubitStarkPhaseEcho``. scqo sweeps ``stark_amp`` (amplitude
@@ -179,6 +185,30 @@ from scqo import register
 from scqo.experiments import QubitStarkPhaseEcho
 
 
+def _baked_stark_amps(qubits, stark_operation: str) -> dict[str, float]:
+    """``{qubit: baked amplitude}`` of the stark op — the ABSOLUTE reference the
+    swept factor multiplies.
+
+    scqo attaches this as the ``digital_amp`` coordinate, so the run's figures carry
+    an absolute-amplitude axis and the full-turn answer is reported in the frame an
+    operator can act on. It has to come from HERE: the reference is a named
+    OPERATION's own amplitude, not a channel knob, so no roster field addresses it
+    and no later device read recovers what actually played.
+
+    Provenance only, so it degrades instead of raising: a pulse class with no scalar
+    ``amplitude`` (nothing bans an arbitrary-sample stark waveform) has no absolute
+    reference to report, and scqo simply leaves the axis off. Call this only AFTER
+    ``build_program``, whose guard refuses a missing operation BY NAME.
+    """
+    baked: dict[str, float] = {}
+    for i in range(len(qubits)):
+        q = qubits[i]
+        amplitude = getattr(q.xy.operations[stark_operation], "amplitude", None)
+        if amplitude is not None:
+            baked[q.name] = float(amplitude)
+    return baked
+
+
 @register
 class QMQubitStarkPhaseEcho(QubitStarkPhaseEcho):
     """Build a multiplexed AC-Stark phase echo QUA program on the QM OPX."""
@@ -191,7 +221,7 @@ class QMQubitStarkPhaseEcho(QubitStarkPhaseEcho):
         qubits = select_qubits(machine, self.params.targets, multiplexed=True)
         stark_amps = np.asarray(self.sweep_axes["stark_amp"], dtype=float)
 
-        return build_program(
+        built = build_program(
             machine,
             qubits,
             stark_amps=stark_amps,
@@ -202,3 +232,5 @@ class QMQubitStarkPhaseEcho(QubitStarkPhaseEcho):
             reset_max_attempts=reset_max_attempts(self),
             use_state_discrimination=bool(self.params.use_state_discrimination),
         )
+        self.probe_stark_amp = _baked_stark_amps(qubits, self.params.stark_operation)
+        return built

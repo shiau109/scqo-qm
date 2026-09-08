@@ -113,6 +113,35 @@ def test_build_program_refuses_missing_stark_op():
                       num_shots=10, reset_type="thermal")
 
 
+def test_baked_stark_amps_reports_the_absolute_reference(machine_with_stark):
+    """The swept factor multiplies the op's BAKED amplitude, and only this driver
+    can read a named operation's own amplitude — so the report is what gives the run
+    an absolute amplitude scale at all (scqo turns it into `digital_amp`)."""
+    from scqo_qm.experiments._lib import select_qubits
+    from scqo_qm.experiments.qubit_stark_phase_echo import _baked_stark_amps
+
+    machine, target = machine_with_stark
+    if target is None:
+        pytest.skip("no live qubit carrying x90/x180/y90")
+    qubits = select_qubits(machine, [target], multiplexed=True)
+    assert _baked_stark_amps(qubits, "stark") == {target: 0.25}  # the fixture's bake
+
+
+def test_baked_stark_amps_skips_a_pulse_without_a_scalar_amplitude(machine_with_stark):
+    """Provenance degrades instead of raising: a waveform with no scalar amplitude
+    has no absolute reference to report, and scqo just leaves the axis off."""
+    from scqo_qm.experiments._lib import select_qubits
+    from scqo_qm.experiments.qubit_stark_phase_echo import _baked_stark_amps
+
+    machine, target = machine_with_stark
+    if target is None:
+        pytest.skip("no live qubit carrying x90/x180/y90")
+    op = machine.qubits[target].xy.operations["stark"]
+    op.amplitude = None
+    qubits = select_qubits(machine, [target], multiplexed=True)
+    assert _baked_stark_amps(qubits, "stark") == {}
+
+
 def test_build_program_refuses_amplitude_factor_ge_two(machine_with_stark):
     from scqo_qm.experiments._lib import select_qubits
     from scqo_qm.experiments.qubit_stark_phase_echo import build_program
