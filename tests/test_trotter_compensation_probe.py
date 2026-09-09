@@ -41,12 +41,24 @@ def _qubit(name, ops=("x180", "stark"), macros=(), if_hz=100_000_000):
     )
 
 
-def _pair(name, macros=(SWAP,)):
+#: the flux pulse a stub pair's swap macro plays, and its length. An idle step
+#: copies that length, so the stubs carry one.
+FLUX_PULSE = "flattop_cosine"
+PULSE_NS = 64
+
+
+def _pair(name, macros=(SWAP,), pulse_ns=PULSE_NS):
+    """A stub pair. ``pulse_ns=None`` registers the macro with NO flux pulse,
+    which is the shape an idle step cannot take its duration from."""
+    ops = {} if pulse_ns is None else {FLUX_PULSE: SimpleNamespace(length=pulse_ns)}
+    control = _qubit(f"{name}_c")
+    control.z = SimpleNamespace(operations=ops)
     return SimpleNamespace(
         name=name,
-        qubit_control=_qubit(f"{name}_c"),
+        qubit_control=control,
         qubit_target=_qubit(f"{name}_t"),
-        macros={m: SimpleNamespace(flux_pulse="flattop_cosine") for m in macros},
+        coupler=SimpleNamespace(operations=ops),
+        macros={m: SimpleNamespace(flux_pulse=FLUX_PULSE) for m in macros},
     )
 
 
@@ -62,7 +74,9 @@ def _kwargs(**overrides):
         reset_qubit=q2,
         prep_qubit=q1,
         prep_operation="x180",
-        swap_operation=SWAP,
+        first_operation=SWAP,
+        second_operation=SWAP,
+        idle_reference_operation=SWAP,
         reset_operation=RESET_MACRO,
         stark_operation="stark",
         stark_detuning_hz=50e6,
@@ -85,6 +99,14 @@ def _kwargs(**overrides):
         ({"operation_gap_ns": -4}, "multiple of 4"),
         ({"first_pair": _pair("q1_q2", macros=())}, "no macro 'iswap'"),
         ({"second_pair": _pair("q2_q3", macros=("cz",))}, "no macro 'iswap'"),
+        # an idle step still needs a DURATION, and it comes from a real macro
+        ({"first_operation": None, "first_pair": _pair("q1_q2", macros=())},
+         "has no macro 'iswap', so an 'idle' step"),
+        ({"first_operation": None, "first_pair": _pair("q1_q2", pulse_ns=None)},
+         "no flux pulse with a length"),
+        # the angle knob has nothing to turn on a step that plays no pulse
+        ({"first_operation": None, "first_coupler_amp": 0.04},
+         "is an idle step but was given a coupler amplitude"),
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
         ({"prep_operation": "x270"}, "no xy operation 'x270'"),
         ({"stark_operation": "tone"}, "no xy operation 'tone'"),
@@ -186,7 +208,9 @@ def _live_kwargs(machine, **overrides):
         reset_qubit=machine.qubits["q2"],
         prep_qubit=machine.qubits["q1"],
         prep_operation="x180",
-        swap_operation=SWAP,
+        first_operation=SWAP,
+        second_operation=SWAP,
+        idle_reference_operation=SWAP,
         reset_operation=RESET_MACRO,
         stark_operation="stark",
         stark_detuning_hz=50e6,

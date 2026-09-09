@@ -42,8 +42,23 @@ def _qubit(name, ops=("x180", "stark"), macros=(), if_hz=100_000_000):
     )
 
 
-def _pair(name, macros=(SWAP,)):
-    return SimpleNamespace(name=name, macros={m: SimpleNamespace() for m in macros})
+#: the flux pulse a stub pair's swap macro plays, and its length. An idle step
+#: copies that length, so the stubs have to carry one for the idle guards to
+#: reach anything but "there is no duration here".
+FLUX_PULSE = "flattop_cosine"
+PULSE_NS = 64
+
+
+def _pair(name, macros=(SWAP,), pulse_ns=PULSE_NS):
+    """A stub pair. ``pulse_ns=None`` registers the macro with NO flux pulse,
+    which is the shape an idle step cannot take its duration from."""
+    ops = {} if pulse_ns is None else {FLUX_PULSE: SimpleNamespace(length=pulse_ns)}
+    return SimpleNamespace(
+        name=name,
+        macros={m: SimpleNamespace(flux_pulse=FLUX_PULSE) for m in macros},
+        qubit_control=SimpleNamespace(z=SimpleNamespace(operations=ops)),
+        coupler=SimpleNamespace(operations=ops),
+    )
 
 
 def _kwargs(**overrides):
@@ -58,7 +73,9 @@ def _kwargs(**overrides):
         reset_qubit=q2,
         prep_qubit=q1,
         prep_operation="x180",
-        swap_operation=SWAP,
+        first_operation=SWAP,
+        second_operation=SWAP,
+        idle_reference_operation=SWAP,
         reset_operation=RESET_MACRO,
         stark_operation="stark",
         stark_detuning_hz=50e6,
@@ -82,6 +99,20 @@ def _kwargs(**overrides):
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
         ({"prep_operation": "x270"}, "no xy operation 'x270'"),
         ({"stark_operation": "tone"}, "no xy operation 'tone'"),
+        # an idle step still needs a DURATION, and it comes from a real macro:
+        # a pair that does not carry the reference cannot idle for the right
+        # length, and idling for the wrong one is the silent failure.
+        ({"first_operation": None, "first_pair": _pair("q1_q2", macros=())},
+         "has no macro 'iswap', so an 'idle' step"),
+        ({"first_operation": None, "first_pair": _pair("q1_q2", pulse_ns=None)},
+         "no flux pulse with a length"),
+        ({"first_operation": None, "first_pair": _pair("q1_q2", pulse_ns=6)},
+         "not a multiple of the 4 ns clock"),
+        ({"first_operation": None, "first_pair": _pair("q1_q2", pulse_ns=8)},
+         "below QUA's 16 ns minimum wait"),
+        # the angle knob has nothing to turn on a step that plays no pulse
+        ({"first_operation": None, "first_coupler_amp": 0.04},
+         "is an idle step but was given a coupler amplitude"),
     ],
 )
 def test_guards_refuse_by_name_before_any_qua(override, message):
@@ -161,7 +192,9 @@ def _live_kwargs(machine, **overrides):
         reset_qubit=machine.qubits["q2"],
         prep_qubit=machine.qubits["q1"],
         prep_operation="x180",
-        swap_operation=SWAP,
+        first_operation=SWAP,
+        second_operation=SWAP,
+        idle_reference_operation=SWAP,
         reset_operation=RESET_MACRO,
         stark_operation="stark",
         stark_detuning_hz=50e6,
@@ -259,6 +292,45 @@ def test_a_qubit_without_a_compensation_amp_gets_no_tone(live_chain):
                 if "update_frequency" in ln and ".xy" in ln]
 
 
+def _swap_pulse(machine, pair_name):
+    """``(pulse name, length in ns)`` the pair's swap macro plays — read off the
+    live tree rather than hard-coded, so a re-registered chip does not silently
+    turn the idle test into a test of the number 64."""
+    macro = machine.qubit_pairs[pair_name].macros[SWAP]
+    name = macro.flux_pulse
+    return name, machine.qubit_pairs[pair_name].qubit_control.z.operations[name].length
+
+
+def test_an_idle_step_waits_the_swap_out_instead_of_playing_it(live_chain):
+    """The control arm. Idling the FIRST step must remove its pulses and put a
+    wait of EXACTLY the swap's length on the same channels — the round has to
+    keep its duration, or the comparison stops being about the swap and starts
+    being about when everything else happened."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    pulse, length_ns = _swap_pulse(machine, PAIRS[0])
+    prog, _axes = build_program(**_live_kwargs(machine, first_operation=None))
+    text = generate_qua_script(prog, machine.generate_config())
+
+    # the first step plays nothing: not on the control z line, not on the coupler
+    assert f'play("{pulse}", "q1.z")' not in text
+    assert f'play("{pulse}", "{PAIRS[0]}")' not in text
+    # ...it waits instead, for the swap's own length, on the pair's channels
+    waits = [ln for ln in text.splitlines()
+             if ln.strip().startswith(f"wait({length_ns // 4},")
+             and f'"{PAIRS[0]}"' in ln]
+    assert len(waits) == 1, text
+    for channel in ("q1.z", "q2.z", PAIRS[0]):
+        assert f'"{channel}"' in waits[0]
+    # and the SECOND step is untouched — one step idled, not the round. It plays
+    # its OWN pulse: the two pairs carry different flux pulses under the same
+    # macro key on this chip, which is the whole reason a step names its own
+    # operation rather than sharing one.
+    second_pulse, _ns = _swap_pulse(machine, PAIRS[1])
+    assert f'play("{second_pulse}", "{PAIRS[1]}")' in text
+
+
 # ------------------------------------------------------- the registered shell
 
 
@@ -294,9 +366,12 @@ def _live_experiment(machine, **params):
         backend,
         QMQcUnidirectionalTrotter.Parameters(
             targets=list(CHAIN),
-            first_pair=_composite_over(roster, CHAIN[:2]),
-            second_pair=_composite_over(roster, CHAIN[1:]),
-            reset_qubit="q2", swap_operation=SWAP, reset_operation=RESET_MACRO,
+            first_pair={"pair": _composite_over(roster, CHAIN[:2]),
+                        "operation": SWAP},
+            second_pair={"pair": _composite_over(roster, CHAIN[1:]),
+                         "operation": SWAP},
+            reset_qubit="q2", idle_reference_operation=SWAP,
+            reset_operation=RESET_MACRO,
             compensation_amps={"q1": 0.3, "q2": 0.2, "q3": 0.25},
             max_rounds=5, num_averages=10, **params))
     exp.sweep_axes = exp.define_sweep()   # the Session's job before the hook
@@ -324,6 +399,26 @@ def test_probe_matches_the_direct_build(live_chain):
     # the prep qubit was DERIVED: q1 is the first_pair member absent from
     # second_pair, and nothing in the params named it
     assert script(from_probe).count('play("x180"') == 1
+
+
+def test_probe_translates_the_neutral_idle_into_the_builders_none(live_chain):
+    """scqo spells the reserved step 'idle' and the builder spells it None —
+    that translation is the adapter's, and it is the only place the two
+    vocabularies meet. Same program either way, or one of them is wrong."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    _backend, exp = _live_experiment(machine, readout_mode="shot")
+    exp.params.first_pair = {**exp.params.first_pair, "operation": "idle"}
+    from_probe, _axes = exp.probe()
+    direct, _ = build_program(**_live_kwargs(machine, first_operation=None))
+    assert script(from_probe) == script(direct)
 
 
 def test_preview_renders_the_chain_without_touching_the_network(live_chain,

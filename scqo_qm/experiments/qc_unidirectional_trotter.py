@@ -15,10 +15,14 @@ Circuit per shot (for a swept Trotter-step count N):
      (``update_frequency``), so its tone SHIFTS the qubit rather than rotating
      it. Hoisted out of the loop: prep (above) and readout (below) both need the
      resonant IF, and nothing between them does.
-  4. Repeat N times: bare ``first_pair.macros[swap_operation].apply()``, bare
-     ``second_pair.macros[swap_operation].apply()``, bare
+  4. Repeat N times: bare ``first_pair.macros[first_operation].apply()``, bare
+     ``second_pair.macros[second_operation].apply()``, bare
      ``reset_qubit.macros[reset_operation].apply()``, then one
      ``xy.play(stark_operation, amplitude_scale=a)`` per compensated qubit.
+     Each pair names its own operation - a chip does not carry the same gate on
+     every couple - and either step may instead be IDLE (``operation=None``
+     here), which plays nothing and waits the length that pair's swap would have
+     taken, leaving the round's timing intact for the comparison.
   5. Restore the resonant IFs, then read out every measured qubit.
 
 The macros are invoked BARE (``.apply()`` with no arguments), so each must be
@@ -66,6 +70,7 @@ from qualang_tools.loops import from_array
 
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
+from scqo_qm.experiments._chain_round import idle_wait_cycles
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
 
@@ -108,7 +113,12 @@ def build_program(
     *,
     prep_qubit,
     prep_operation: str,
-    swap_operation: str,
+    # None = an IDLE step: play nothing, wait the swap's length instead. The
+    # neutral layer spells that "idle"; the word is translated in probe() so this
+    # builder stays vendor-only, and None cannot collide with a macro key.
+    first_operation: Optional[str],
+    second_operation: Optional[str],
+    idle_reference_operation: str,
     reset_operation: str,
     stark_operation: str,
     stark_detuning_hz: float,
@@ -129,8 +139,15 @@ def build_program(
     ``measure_qubits`` is a plain list of qubit objects read out at the end of
     the circuit, IN CHAIN ORDER (the order fixes the joint-state digit order
     downstream). ``first_pair`` / ``second_pair`` are qubit-pair objects whose
-    ``macros[swap_operation]`` is applied bare, in that sequence, each round;
-    ``reset_qubit``'s ``macros[reset_operation]`` fires after them.
+    ``macros[<its own operation>]`` is applied bare, in that sequence, each
+    round; ``reset_qubit``'s ``macros[reset_operation]`` fires after them.
+
+    Each pair carries its OWN operation because a chip does not register the same
+    gate on every couple. An operation of ``None`` is an IDLE step: it plays
+    nothing and instead waits ``idle_wait_cycles(pair, idle_reference_operation)``
+    — the length that pair's swap would have occupied — so the round keeps its
+    duration and an idle run differs from a swapping one by the exchange alone.
+
     ``compensation`` is a sequence of ``(qubit object, amplitude factor)`` pairs
     - one Stark tone each, played concurrently at the end of a round. A qubit
     absent from it gets no tone at all; a qubit present with factor 0.0 still
@@ -154,9 +171,17 @@ def build_program(
     gap_cycles = operation_gap_ns // 4
 
     # Everything that can refuse, refuses HERE - before a single QUA statement,
-    # so a mis-registered chip costs no instrument time.
-    _check_macro(first_pair, swap_operation, "first_pair")
-    _check_macro(second_pair, swap_operation, "second_pair")
+    # so a mis-registered chip costs no instrument time. An idle step is resolved
+    # in the same pass: its wait has to be a real number before the round is
+    # built, and a pair that cannot supply one refuses by name like any other.
+    steps = [(first_pair, first_operation, "first_pair"),
+             (second_pair, second_operation, "second_pair")]
+    idle_cycles = {}
+    for pair, operation, what in steps:
+        if operation is None:
+            idle_cycles[what] = idle_wait_cycles(pair, idle_reference_operation)
+        else:
+            _check_macro(pair, operation, what)
     _check_macro(reset_qubit, reset_operation, "reset_qubit")
     if prep_operation not in prep_qubit.xy.operations:
         raise ValueError(
@@ -174,14 +199,23 @@ def build_program(
     # The swap ANGLE knob, when a run sets it: the coupler pulse must exist and
     # be turnable (baked at zero it is not), and the port must be able to emit
     # the volts. A pair left at None plays its baked coupler amplitude and is
-    # not checked, because nothing is being asked of it.
-    for pair, amp in ((first_pair, first_coupler_amp),
-                      (second_pair, second_coupler_amp)):
-        if amp is not None:
-            guard_coupler_amplitudes(
-                pair, swap_operation, [float(amp)],
-                why="swap_coupler_flux sets the swap angle through the coupler.",
-                label=f"{pair.name} swap_coupler_flux")
+    # not checked, because nothing is being asked of it. Each pair is guarded
+    # against ITS OWN operation - the coupler pulse belongs to the macro, so
+    # checking one pair's amplitude against the other's gate would be nonsense.
+    for (pair, operation, _what), amp in zip(steps, (first_coupler_amp,
+                                                     second_coupler_amp)):
+        if amp is None:
+            continue
+        if operation is None:
+            raise ValueError(
+                f"Pair {pair.name} is an idle step but was given a coupler "
+                f"amplitude ({amp}) - an idle plays no pulse, so there is "
+                f"nothing to set it on. Drop it from swap_coupler_flux, or give "
+                f"this pair a real swap operation.")
+        guard_coupler_amplitudes(
+            pair, operation, [float(amp)],
+            why="swap_coupler_flux sets the swap angle through the coupler.",
+            label=f"{pair.name} swap_coupler_flux")
 
     involved = _dedup_involved(measure_qubits, [first_pair, second_pair],
                                [reset_qubit, prep_qubit])
@@ -248,11 +282,21 @@ def build_program(
                     # A pair named in swap_coupler_flux is driven at that coupler
                     # amplitude (the angle knob); one that is not plays bare, so
                     # the default {} is byte-for-byte the pre-existing sequence.
-                    first_pair.macros[swap_operation].apply(**first_swap_kwargs)
+                    # An idle step waits on the SAME channels the swap would have
+                    # occupied (pair.wait covers both members and the coupler),
+                    # for the same number of cycles - so the two runs share a
+                    # timeline and only the exchange differs.
+                    if first_operation is None:
+                        first_pair.wait(idle_cycles["first_pair"])
+                    else:
+                        first_pair.macros[first_operation].apply(**first_swap_kwargs)
                     if gap_cycles > 0:
                         first_pair.wait(gap_cycles)
                     align()
-                    second_pair.macros[swap_operation].apply(**second_swap_kwargs)
+                    if second_operation is None:
+                        second_pair.wait(idle_cycles["second_pair"])
+                    else:
+                        second_pair.macros[second_operation].apply(**second_swap_kwargs)
                     if gap_cycles > 0:
                         second_pair.wait(gap_cycles)
                     align()
@@ -308,7 +352,17 @@ def acquire(
 
 from scqo import register
 from scqo.experiments import QcUnidirectionalTrotter
-from scqo.experiments.qc_unidirectional_trotter import chain_roles
+from scqo.experiments.qc_unidirectional_trotter import IDLE, chain_roles, pair_specs
+
+
+def _vendor_operation(operation: str) -> Optional[str]:
+    """scqo's reserved ``IDLE`` -> the builder's ``None``.
+
+    The word lives in the neutral layer (``simulate()`` needs it too) and the
+    builder stays vendor-only, so the translation happens exactly here — one
+    line, in the adapter whose whole job is mapping the two vocabularies.
+    """
+    return None if operation == IDLE else operation
 
 
 @register
@@ -327,6 +381,7 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         # The chain topology comes from scqo's own resolver, so the neutral
         # layer and the probe can never disagree about which member is the relay.
         _source, _relay, _sink, prep = chain_roles(self.device.roster, self.params)
+        (first_name, first_op), (second_name, second_op) = pair_specs(self.params)
 
         machine = self.backend.machine  # type: ignore[attr-defined]
         # Chain order is the TARGET order: it fixes the joint-state digit order
@@ -343,8 +398,8 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         return build_program(
             machine,
             measure_qubits,
-            vendor_pair(self, self.params.first_pair),
-            vendor_pair(self, self.params.second_pair),
+            vendor_pair(self, first_name),
+            vendor_pair(self, second_name),
             # the parametric reset is a FLUX-line technique, so the roster join
             # goes through the z channel — a reset qubit with no flux wire is
             # refused there by name
@@ -352,13 +407,15 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
                          kind="flux"),
             prep_qubit=vendor_qubit(self, prep, field="prep_qubit"),
             prep_operation=self.params.prep_operation,
-            swap_operation=self.params.swap_operation,
+            first_operation=_vendor_operation(first_op),
+            second_operation=_vendor_operation(second_op),
+            idle_reference_operation=self.params.idle_reference_operation,
             reset_operation=self.params.reset_operation,
             stark_operation=self.params.stark_operation,
             stark_detuning_hz=self.params.stark_detuning_hz,
             compensation=compensation,
-            first_coupler_amp=coupler_flux.get(self.params.first_pair),
-            second_coupler_amp=coupler_flux.get(self.params.second_pair),
+            first_coupler_amp=coupler_flux.get(first_name),
+            second_coupler_amp=coupler_flux.get(second_name),
             rounds_array=np.asarray(self.sweep_axes["round_count"]).astype(int),
             num_shots=int(self.params.num_averages),
             reset_type=reset,
