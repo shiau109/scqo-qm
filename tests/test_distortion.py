@@ -126,3 +126,47 @@ def test_clear_unknown_target_refused_by_name():
 def test_clear_target_without_flux_line_refused():
     with pytest.raises(ValueError, match="no flux"):
         clear_exponential_filter(_machine(with_z=False), "q1")
+
+
+def _opx_plus_machine():
+    """A duck-typed QUAM whose z line is on an OPX+ analog output.
+
+    ``OPXPlusAnalogOutputPort`` carries the LF base fields (feedforward/feedback
+    filter, offset, delay) and none of the LF-FEM extras — no
+    ``exponential_filter``, no ``output_mode``.
+    """
+    port = SimpleNamespace(feedforward_filter=None, feedback_filter=None,
+                           offset=None, delay=0)
+    return SimpleNamespace(qubits={"q1": SimpleNamespace(z=SimpleNamespace(opx_output=port))})
+
+
+def test_apply_on_an_opx_plus_port_is_refused_rather_than_silently_dropped():
+    """The write would otherwise SUCCEED and then vanish.
+
+    quam does not object to inventing ``exponential_filter`` on a port class that
+    has no such field: the assignment sticks to the instance, ``to_dict()`` omits
+    it, and ``get_port_properties()`` never looks. The operator would read a
+    printed success, save a state.json with no filter in it, and keep a distorted
+    flux line. So the refusal is the correctness fix, not a nicety.
+    """
+    m = _opx_plus_machine()
+    with pytest.raises(ValueError) as err:
+        apply_exponential_filter(m, "q1", [0.1], [1e-6])
+    message = str(err.value)
+    assert "OPX+" in message
+    assert "feedforward_filter" in message and "feedback_filter" in message
+    assert not hasattr(m.qubits["q1"].z.opx_output, "exponential_filter")
+
+
+def test_clear_on_an_opx_plus_port_is_refused_the_same_way():
+    with pytest.raises(ValueError) as err:
+        clear_exponential_filter(_opx_plus_machine(), "q1")
+    assert "OPX+" in str(err.value)
+
+
+def test_the_opx_plus_refusal_lands_before_the_cascade_is_computed():
+    """Ordering matters: the decomposition is the expensive half and pulls in
+    scqat. An unsupported port must be refused before any of it is spent."""
+    with pytest.raises(ValueError, match="OPX\+"):
+        apply_exponential_filter(
+            _opx_plus_machine(), "q1", [0.1, 0.2], [1e-6, 2e-6], form="cascade")

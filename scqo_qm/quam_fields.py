@@ -369,6 +369,49 @@ def drive_frequency_problems(machine: Any) -> list[str]:
     return problems
 
 
+def rf_frequency_reference_problems(machine: Any) -> list[str]:
+    """Every drive/readout channel whose ``RF_frequency`` is STORED as a reference.
+
+    The quietest failure in the frequency mapping, and the one
+    :func:`drive_frequency_problems` structurally cannot see. ``IQChannel`` and
+    ``MWChannel`` both DEFAULT ``RF_frequency`` to ``"#./inferred_RF_frequency"``
+    (LO + IF). A tree that kept the default READS perfectly — QUAM resolves the
+    reference and hands back a number, so every audit, every snapshot and every
+    ``scqo state`` agrees the frequency is fine. The first WRITE is where it dies:
+    QUAM refuses a literal over a reference outright, so ``set_drive_freq`` /
+    ``set_readout_freq`` raise ``ValueError`` mid-run, at writeback, after the
+    instrument time is already spent.
+
+    ``quam_builder``'s own transmon builders avoid this by constructing with
+    ``RF_frequency=None`` and referencing the IF instead, which is why every tree
+    built by ``build_quam`` is already compliant and the live states are too. A
+    hand-written tree, or one assembled some other way, is the way in — and an
+    Octave tree is the likeliest to be hand-assembled, which is why this became
+    worth auditing.
+
+    Pure (no I/O, no QUA); the caller decides how loudly to fail. Empty list =
+    compliant.
+    """
+    problems: list[str] = []
+    for name, qubit in getattr(machine, "qubits", {}).items():
+        for line in ("xy", "resonator"):
+            channel = getattr(qubit, line, None)
+            if channel is None:
+                continue
+            if not _field_is_reference(channel, "RF_frequency"):
+                continue
+            problems.append(
+                f"qubits.{name}.{line}.RF_frequency is stored as a QUAM reference, "
+                f"not a number. It READS fine (QUAM resolves it to LO + IF), so "
+                f"nothing else notices - but QUAM refuses to overwrite a reference "
+                f"with a literal, so the first writeback would raise mid-run after "
+                f"the instrument time is spent. Store the resolved value as a "
+                f"literal and reference the IF instead (the shape build_quam "
+                f"produces, and what every live state already carries): "
+                f"python quam_config/convert_state_rf_literal.py <backend_config dir>")
+    return problems
+
+
 #: Every named standing-bias attribute a flux channel can carry — the qubit
 #: FluxLine vocabulary plus the TunableCoupler one. Audited together because the
 #: DAC does not care which name a bias arrived under.
@@ -577,7 +620,8 @@ def get_flux_delay(flux_channel: Any) -> float:
     ``flux_channel`` is the FLUX-carrying QUAM channel the scqo flux view wraps —
     a qubit's ``z`` FluxLine or a ``TunableCoupler`` (both SingleChannels with an
     ``opx_output`` port). The delay is a PORT-level ``int`` ns field
-    (``LFFEMAnalogOutputPort.delay``, 0 by default), shared by everything on that
+    (``LFAnalogOutputPort.delay``, 0 by default -- the shared base, so it is on
+    an OPX+ analog output exactly as on an LF-FEM), shared by everything on that
     physical DAC output; on a per-qubit z wire that is per-qubit in practice.
     """
     return float(flux_channel.opx_output.delay) / 1e9

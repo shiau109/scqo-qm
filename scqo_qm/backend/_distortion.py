@@ -19,8 +19,51 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-#: OPX LF-FEM sample period (1 GS/s), seconds.
+from scqo_qm._family import FLUX_OPX_PLUS, flux_port_family
+
+#: OPX sample period (1 GS/s), seconds. The same on an OPX+ analog output (where
+#: it is a ClassVar) and on an LF-FEM at its 1 GS/s setting.
 OPX_TS_S = 1e-9
+
+
+def _exponential_filter_port(machine, target: str, *, noun: str):
+    """The z-line output port for ``target``, or a refusal naming why there is none.
+
+    The ONE door both entry points below resolve their port through, because the
+    failure it prevents is otherwise INVISIBLE. ``exponential_filter`` is an
+    ``LFFEMAnalogOutputPort`` field; an ``OPXPlusAnalogOutputPort`` does not have
+    it, and quam does not object to inventing one — the assignment succeeds, the
+    attribute lives on the instance, and then ``to_dict()`` drops it and
+    ``get_port_properties()`` never looks. So without this guard an operator gets
+    a printed success, a saved state.json with no filter in it, and a flux line
+    that is still distorted.
+
+    OPX+ predistortion exists, but as ``feedforward_filter`` (FIR) +
+    ``feedback_filter`` (IIR) — a different decomposition, not a renamed field —
+    so the remedy is a conversion this driver does not do yet, not a retry.
+    """
+    try:
+        qubit = machine.qubits[target]
+    except (KeyError, TypeError):
+        try:
+            have = sorted(machine.qubits)
+        except Exception:
+            have = "?"
+        raise ValueError(
+            f"{target!r} is not a qubit in this machine (have {have})") from None
+    z = getattr(qubit, "z", None)
+    if z is None:
+        raise ValueError(
+            f"{target!r} has no flux (z) line — no exponential_filter to {noun}")
+    if flux_port_family(z) == FLUX_OPX_PLUS:
+        raise ValueError(
+            f"{target}.z is on an OPX+ analog output, which has no "
+            f"exponential_filter — flux predistortion there is feedforward_filter "
+            f"(FIR) + feedback_filter (IIR), a different decomposition this driver "
+            f"does not write yet. Refusing rather than {noun}ing: quam would ACCEPT "
+            f"the assignment and then drop it on save, so the filter would silently "
+            f"never reach the port.")
+    return z.opx_output
 
 
 def to_exponential_filter(
@@ -63,20 +106,7 @@ def clear_exponential_filter(machine, target: str) -> dict[str, Any]:
     ``{"removed": [the taps that were set]}``; does NOT persist (caller saves).
     Same target/z guards as :func:`apply_exponential_filter`.
     """
-    try:
-        qubit = machine.qubits[target]
-    except (KeyError, TypeError):
-        try:
-            have = sorted(machine.qubits)
-        except Exception:
-            have = "?"
-        raise ValueError(
-            f"{target!r} is not a qubit in this machine (have {have})") from None
-    z = getattr(qubit, "z", None)
-    if z is None:
-        raise ValueError(
-            f"{target!r} has no flux (z) line — no exponential_filter to clear")
-    port = z.opx_output
+    port = _exponential_filter_port(machine, target, noun="clear")
     removed = [list(pair) for pair in (port.exponential_filter or [])]
     port.exponential_filter = []
     return {"removed": removed}
@@ -115,19 +145,7 @@ def apply_exponential_filter(
     with no ``z`` line, an unknown ``form``, or ``form="cascade"`` with
     ``replace=False`` (a cascade is a whole-response decomposition, not a stack).
     """
-    try:
-        qubit = machine.qubits[target]
-    except (KeyError, TypeError):
-        try:
-            have = sorted(machine.qubits)
-        except Exception:
-            have = "?"
-        raise ValueError(
-            f"{target!r} is not a qubit in this machine (have {have})") from None
-    z = getattr(qubit, "z", None)
-    if z is None:
-        raise ValueError(
-            f"{target!r} has no flux (z) line — no exponential_filter to set")
+    port = _exponential_filter_port(machine, target, noun="set")
 
     if form == "sum":
         value: list = to_exponential_filter(amps, taus_s)
@@ -142,7 +160,6 @@ def apply_exponential_filter(
     else:
         raise ValueError(f"unknown form {form!r} (use 'sum' or 'cascade')")
 
-    port = z.opx_output
     if replace or not port.exponential_filter:
         # wholesale (re)assignment builds a fresh list of plain [A, tau] pairs.
         port.exponential_filter = list(value)

@@ -260,7 +260,9 @@ class FlatTopCosinePulse(Pulse):
 
     """
 
-    amplitude: float = 0.25  # keep < 0.5 (OPX1000 LF-FEM "direct" DAC rail; >=0.5 is clipped on HW)
+    # keep < 0.5: the LF-FEM "direct" rail AND the OPX+ rail (which has no other
+    # mode); >= 0.5 is clipped on HW, and the simulator shows nothing.
+    amplitude: float = 0.25
     edge_width: int = 5
     axis_angle: float = None
 

@@ -7,7 +7,11 @@ time and refuse by name.
 
 **The rail is a property of the PORT, not a constant.** An OPX1000 LF-FEM analog
 output reaches +/-0.5 V in ``direct`` mode and +/-2.5 V in ``amplified``.
-Hardcoding 0.5 refuses every legitimate amplified-mode config outright.
+Hardcoding 0.5 refuses every legitimate amplified-mode config outright. An OPX+
+analog output has no mode switch at all: a hard +/-0.5 V. Numerically that is the
+LF-FEM's ``direct`` value, but it is not the same claim, and the difference is
+entirely in the REMEDY — telling someone to switch an OPX+ port to 'amplified'
+sends them after a setting that does not exist on their instrument.
 
 **Two frames, two entry points.** They mirror scqo's two flux capability mixins
 (``FluxSweepParameters`` / ``FluxPulseSweepParameters``) one-for-one, so the same
@@ -31,14 +35,20 @@ experiment adapter picks the entry point from ``flux_frame(params)``.
 
 from typing import Optional
 
+from scqo_qm._family import FLUX_OPX_PLUS, flux_port_family
 from scqo_qm.experiments._amp_limits import MAX_AMP_SCALE
 
 #: OPX1000 LF-FEM full-scale output (V), per port OUTPUT MODE.
 _FEM_FULL_SCALE_V = {"direct": 0.5, "amplified": 2.5}
 
-#: What to assume when a channel exposes no port (a test stub, or a QUAM class
-#: that does not carry opx_output): the CONSERVATIVE rail, so an unknown port
-#: refuses early rather than silently permitting a clipped waveform.
+#: OPX+ analog output full-scale (V). A CONSTANT here, unlike the LF-FEM: the port
+#: class carries no output_mode, so there is no second rail to reach for.
+_OPX_PLUS_FULL_SCALE_V = 0.5
+
+#: What to assume when the tree does not describe the port at all (a test stub, or
+#: a QUAM class that carries no opx_output): the CONSERVATIVE rail, so an unknown
+#: port refuses early rather than silently permitting a clipped waveform. Equal to
+#: the OPX+ rail by arithmetic, separate from it by meaning.
 _DEFAULT_FULL_SCALE_V = _FEM_FULL_SCALE_V["direct"]
 
 #: The QUA amplitude_scale bound lives in ``_amp_limits`` — it is a property of
@@ -61,21 +71,39 @@ def _output_mode(channel) -> Optional[str]:
 
 
 def dac_rail_v(channel) -> float:
-    """The full-scale output voltage of a flux channel's LF-FEM port.
+    """The full-scale output voltage of a flux channel's port.
 
-    Unknown port or mode -> the conservative direct-mode rail.
+    LF-FEM: per ``output_mode``. OPX+: the fixed +/-0.5 V rail. A port the tree
+    does not describe -> the conservative direct-mode rail.
+
+    The OPX+ branch is spelled out rather than left to the fallback even though
+    the two agree numerically: "this is an OPX+ port, whose rail is 0.5 V" and
+    "I could not identify this port, so I am assuming 0.5 V" are different
+    findings, and :func:`rail_remedy` has to tell them apart to give advice that
+    exists on the operator's instrument.
     """
+    if flux_port_family(channel) == FLUX_OPX_PLUS:
+        return _OPX_PLUS_FULL_SCALE_V
     return _FEM_FULL_SCALE_V.get(_output_mode(channel), _DEFAULT_FULL_SCALE_V)
 
 
 def rail_remedy(channel, *, name: str, needed_v: float, rail: float) -> str:
     """The one sentence every over-rail refusal ends with.
 
-    Says what to actually DO, and says something different in each of the three
-    cases -- a port that can be upgraded, a port already at its best, and a port
-    the tree cannot identify. Telling someone to "run that port in amplified
-    mode" when it already IS amplified is worse than saying nothing.
+    Says what to actually DO, and says something different in each of the four
+    cases -- a port that can be upgraded, a port already at its best, a port whose
+    instrument has no upgrade to offer, and a port the tree cannot identify.
+    Telling someone to "run that port in amplified mode" when it already IS
+    amplified is worse than saying nothing; telling an OPX+ operator the same
+    thing is worse still, because they will go looking for a switch their
+    instrument does not have.
     """
+    if flux_port_family(channel) == FLUX_OPX_PLUS:
+        return (
+            f"{name} needs {needed_v} V, but it is on an OPX+ analog output, whose "
+            f"full scale is a fixed {rail} V -- there is no 'amplified' mode on "
+            f"that instrument. Narrow the window, move the idle bias, or add "
+            f"external amplification on that flux line.")
     mode = _output_mode(channel)
     if mode == "amplified":
         return (
@@ -92,10 +120,10 @@ def rail_remedy(channel, *, name: str, needed_v: float, rail: float) -> str:
             f"{amplified * _CONST_AMP_RAIL_FRACTION} to keep the rail/2 "
             f"convention.")
     return (
-        f"{name} needs {needed_v} V, but its channel exposes no opx_output, so "
-        f"the conservative 'direct' rail of {rail} V is assumed. Give the channel "
-        f"a real port, or run it in 'amplified' mode "
-        f"({_FEM_FULL_SCALE_V['amplified']} V).")
+        f"{name} needs {needed_v} V, but its channel does not describe an output "
+        f"port this driver recognizes, so the conservative 'direct' rail of "
+        f"{rail} V is assumed. Give the channel a real port; if it is an LF-FEM, "
+        f"'amplified' mode reaches {_FEM_FULL_SCALE_V['amplified']} V.")
 
 
 #: A TunableCoupler names its flux POINTS and its offset ATTRIBUTES differently

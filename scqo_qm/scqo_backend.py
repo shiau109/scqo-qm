@@ -51,6 +51,7 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
         flux_headroom_problems,
         flux_headroom_warnings,
         flux_point_problems,
+        rf_frequency_reference_problems,
     )
     from scqo_qm.backend.qm_backend import QMBackend
 
@@ -78,6 +79,11 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
     # so only a hand edit or a foreign node can split them - and the remedy is
     # a hand edit of state.json too, because `scqo set` builds its session
     # through this very factory and would be refused the same way.
+    #
+    # rf_frequency_reference_problems: the same field must be WRITABLE. A tree
+    # that kept QUAM's default reference for RF_frequency reads right and writes
+    # never - the failure surfaces at the first writeback, mid-run. The audit
+    # above cannot see it (it reads, and the read resolves), so it needs its own.
     for advisory in flux_headroom_warnings(backend.machine):
         warnings.warn(advisory, RuntimeWarning, stacklevel=2)
 
@@ -92,6 +98,9 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
                               "drive_freq_hz would read a number the drive line "
                               "never plays",
          drive_frequency_problems(backend.machine)),
+        ("RF frequencies", "are stored as QUAM references rather than numbers, so "
+                           "they read fine and refuse every writeback",
+         rf_frequency_reference_problems(backend.machine)),
     ]
     report = "\n".join(
         f"{what} in {folder / 'state.json'} {why}:\n  - " + "\n  - ".join(problems)

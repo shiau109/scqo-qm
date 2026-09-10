@@ -45,6 +45,13 @@ from scqo.entities import Channel, Composite
 from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
+from scqo_qm._family import (
+    RF_EXTERNAL_MIXER,
+    RF_MW_FEM,
+    RF_OCTAVE,
+    rf_chain,
+    tree_families,
+)
 from scqo_qm.experiments._coupler_knob import find_coupler_pulse
 from scqo_qm.backend.fieldmap import (
     FIELD_BINDINGS,
@@ -104,11 +111,12 @@ def _preview_refusal(experiment) -> "str | None":
 
 
 #: preview's simulated-waveform window (ns) when --simulate-ns is not given.
-#: Small on purpose: the LF-FEM samples at 2 GS/s, so the html grows 2k
-#: points per ns per port. 20 us shows an active-reset shot from t=0; a
+#: Small on purpose: an LF-FEM samples at up to 2 GS/s, so the html grows 2k
+#: points per ns per port (an OPX+ output is fixed at 1 GS/s -- half the
+#: growth, same reason to keep the window short). 20 us shows an active-reset shot from t=0; a
 #: thermal shot starts with a ms-scale wait, which preview warns about.
 _SIMULATE_DEFAULT_NS = 20_000
-#: hard ceiling for --simulate-ns (400k samples/port at 2 GS/s) — refused by
+#: hard ceiling for --simulate-ns (400k samples/port at the 2 GS/s worst case) — refused by
 #: name above it, because the html and the gateway simulation both scale
 #: linearly with the window.
 _SIMULATE_MAX_NS = 200_000
@@ -119,6 +127,45 @@ _FS_GRID_MIN, _FS_GRID_MAX, _FS_GRID_STEP = -11, 16, 3
 #: The canonical digital operating point: keep the pulse amplitude <= 0.5 full scale
 #: (shared by the readout AND drive chain solves).
 _CANONICAL_MAX_AMP = 0.5
+
+
+#: Why an absolute-power knob is unavailable, per detected RF chain. The MW-FEM
+#: chain is the only one whose power this driver currently solves; the others are
+#: refused BY NAME rather than reaching quam_builder's MW-only power_tools, whose
+#: `AttributeError: no attribute 'opx_output'` names neither the target nor the
+#: reason -- and which `_read_or_none` then swallows into a bare None.
+_POWER_CHAIN_REFUSAL = {
+    RF_OCTAVE: (
+        "is on an Octave RF chain, where absolute power is the Octave's gain "
+        "(dB) plus the IF amplitude (volts), not full_scale_power_dbm. This "
+        "driver does not solve that chain yet -- set the amplitude knob "
+        "(readout_amp / drive_amp) directly for now"),
+    RF_EXTERNAL_MIXER: (
+        "is on an external analog mixer, whose power lives on the local "
+        "oscillator's own source -- outside anything this driver can reach. "
+        "Set the amplitude knob (readout_amp / drive_amp) and the LO power by "
+        "hand"),
+    None: (
+        "declares no RF chain in the QUAM tree (neither frequency_converter_up "
+        "nor opx_output.band), so its absolute power cannot be resolved. Check "
+        "the setup's state.json"),
+}
+
+
+def _mw_power_channel(channel: Any, *, name: str, field: str) -> Any:
+    """``channel`` when its power is MW-FEM-solvable, else a refusal naming why not.
+
+    Absolute power is the one knob family whose vendor home differs per RF chain,
+    so it is also the one that fails WORST when the tree is not the expected one:
+    the MW helpers reach ``channel.opx_output.full_scale_power_dbm``, an Octave
+    channel has no ``opx_output`` at all, and the resulting bare AttributeError is
+    caught by ``_read_or_none`` and reported as ``None`` -- for every qubit, every
+    session, with nothing said. Refusing by name here is what makes that visible.
+    """
+    chain = rf_chain(channel)
+    if chain == RF_MW_FEM:
+        return channel
+    raise ValueError(f"{name}.{field}: {_POWER_CHAIN_REFUSAL[chain]}")
 
 
 def _solve_full_scale(name: str, target: float) -> int:
@@ -286,23 +333,27 @@ class QMReadoutChannel(_QMChannelView, make_view_base("readout")):
     def readout_power_dbm(self) -> float:
         from quam_builder.tools.power_tools import get_output_power_mw_channel
 
-        amp = self._vendor.operations[quam_fields.READOUT_OPERATION].amplitude
+        vendor = _mw_power_channel(
+            self._vendor, name=self.name, field="readout_power_dbm")
+        amp = vendor.operations[quam_fields.READOUT_OPERATION].amplitude
         if not amp:  # None or 0 -> log10 domain error / -inf must never reach the config
             raise ValueError(
                 f"{self.name}: readout amplitude is unset/zero — absolute power undefined"
             )
         return float(get_output_power_mw_channel(
-            self._vendor, quam_fields.READOUT_OPERATION))
+            vendor, quam_fields.READOUT_OPERATION))
 
     @readout_power_dbm.setter
     def readout_power_dbm(self, value: float) -> None:
         from quam_builder.tools.power_tools import set_output_power_mw_channel
 
+        vendor = _mw_power_channel(
+            self._vendor, name=self.name, field="readout_power_dbm")
         target = float(value)
         # max_amplitude=1: the explicit full_scale_power_dbm already encodes the
         # <=0.5 policy; the helper then just sets fs + the exact amplitude.
         set_output_power_mw_channel(
-            self._vendor, target, quam_fields.READOUT_OPERATION,
+            vendor, target, quam_fields.READOUT_OPERATION,
             full_scale_power_dbm=_solve_full_scale(self.name, target), max_amplitude=1,
         )
 
@@ -396,21 +447,25 @@ class QMDriveChannel(_QMChannelView, make_view_base("drive")):
     def drive_power_dbm(self) -> float:
         from quam_builder.tools.power_tools import get_output_power_mw_channel
 
-        amp = self._vendor.operations[quam_fields.SATURATION_OPERATION].amplitude
+        vendor = _mw_power_channel(
+            self._vendor, name=self.name, field="drive_power_dbm")
+        amp = vendor.operations[quam_fields.SATURATION_OPERATION].amplitude
         if not amp:  # None or 0 -> log10 domain error / -inf must never reach the config
             raise ValueError(
                 f"{self.name}: saturation amplitude is unset/zero — absolute power undefined"
             )
         return float(get_output_power_mw_channel(
-            self._vendor, quam_fields.SATURATION_OPERATION))
+            vendor, quam_fields.SATURATION_OPERATION))
 
     @drive_power_dbm.setter
     def drive_power_dbm(self, value: float) -> None:
         from quam_builder.tools.power_tools import set_output_power_mw_channel
 
+        vendor = _mw_power_channel(
+            self._vendor, name=self.name, field="drive_power_dbm")
         target = float(value)
         set_output_power_mw_channel(
-            self._vendor, target, quam_fields.SATURATION_OPERATION,
+            vendor, target, quam_fields.SATURATION_OPERATION,
             full_scale_power_dbm=_solve_full_scale(self.name, target), max_amplitude=1,
         )
 
@@ -1079,48 +1134,79 @@ class QMBackend(Backend):
         Addressed by MODE name (``params.targets``): each target's default readout
         and drive channels are resolved through the roster, so the two blocks stay
         independent — a qubit without a saturation op still reports its readout chain.
+
+        Two different empties, kept apart on purpose. A name the roster does not
+        serve records ``{}`` — there is no chain, so there is nothing to say. A name
+        that DOES resolve but whose chain cannot answer records the reason instead,
+        because a bare ``{}`` there is indistinguishable from the first case, and
+        that is precisely what an Octave tree used to write for every qubit of every
+        run: provenance that never failed and never said anything either.
         """
         from quam_builder.tools.power_tools import get_output_power_mw_channel
+
+        def view_or_none(name: str, kind: str):
+            """The target's default channel view, or None when it serves no such one."""
+            try:
+                return self._default_view(name, kind)
+            except Exception:
+                return None
 
         out: dict = {}
         for name in qubits:
             out[name] = {}
+            readout_view = view_or_none(name, "readout")
             try:
-                view = self._default_view(name, "readout")
-                resonator = view.vendor
+                if readout_view is None:
+                    raise LookupError("no readout channel for this target")
+                resonator = readout_view.vendor
                 ro = resonator.operations[quam_fields.READOUT_OPERATION]
+                # Amplitude and LO FIRST, and the chain-dependent dBm after: the
+                # chain-independent half of the provenance must survive a chain
+                # this driver cannot price. (QUAM resolves LO_frequency to the
+                # port's upconverter_frequency on MW, to the Octave's own LO on
+                # IQ — a hand-edited LO is otherwise invisible in provenance.)
                 out[name] = {
-                    "full_scale_power_dbm": resonator.opx_output.full_scale_power_dbm,
                     "readout_amplitude": float(ro.amplitude),
-                    "readout_power_dbm": float(get_output_power_mw_channel(
-                        resonator, quam_fields.READOUT_OPERATION)),
+                    # WHICH chain, always — it is what makes the rest of this
+                    # block legible: "full_scale_power_dbm missing" reads as a
+                    # fault on an MW run and as the plain truth on an Octave one.
+                    "readout_rf_chain": rf_chain(resonator) or "unknown",
                 }
-                # The readout LO the data was taken at (QUAM resolves LO_frequency
-                # to the port's upconverter_frequency): a hand-edited LO is
-                # otherwise invisible in provenance. Only when the channel has one
-                # (an LF-FEM resonator does not).
                 lo = getattr(resonator, "LO_frequency", None)
                 if lo is not None:
                     out[name]["readout_lo_freq_hz"] = float(lo)
-            except Exception:  # provenance must never fail a run
+                mw = _mw_power_channel(
+                    resonator, name=name, field="readout_power_dbm")
+                out[name]["full_scale_power_dbm"] = mw.opx_output.full_scale_power_dbm
+                out[name]["readout_power_dbm"] = float(get_output_power_mw_channel(
+                    mw, quam_fields.READOUT_OPERATION))
+            except LookupError:  # no such channel — nothing to report, not a fault
                 out[name] = {}
+            except Exception as exc:  # provenance must never fail a run
+                out[name]["readout_unavailable"] = f"{type(exc).__name__}: {exc}"
             # The drive chain behind drive_power_dbm — same never-fail rule, and
             # independent of the readout block.
+            drive_view = view_or_none(name, "drive")
             try:
-                view = self._default_view(name, "drive")
-                xy = view.vendor
+                if drive_view is None:
+                    raise LookupError("no drive channel for this target")
+                xy = drive_view.vendor
                 sat = xy.operations[quam_fields.SATURATION_OPERATION]
-                out[name].update({
-                    "drive_full_scale_power_dbm": xy.opx_output.full_scale_power_dbm,
-                    "saturation_amp": float(sat.amplitude),
-                    "drive_power_dbm": float(get_output_power_mw_channel(
-                        xy, quam_fields.SATURATION_OPERATION)),
-                })
+                out[name]["saturation_amp"] = float(sat.amplitude)
+                out[name]["drive_rf_chain"] = rf_chain(xy) or "unknown"
                 lo = getattr(xy, "LO_frequency", None)
                 if lo is not None:
                     out[name]["drive_lo_freq_hz"] = float(lo)
-            except Exception:  # provenance must never fail a run
+                mw = _mw_power_channel(xy, name=name, field="drive_power_dbm")
+                out[name].update({
+                    "drive_full_scale_power_dbm": mw.opx_output.full_scale_power_dbm,
+                    "drive_power_dbm": float(get_output_power_mw_channel(
+                        mw, quam_fields.SATURATION_OPERATION)),
+                })
+            except LookupError:  # no such channel — nothing to report, not a fault
                 pass
+            except Exception as exc:  # provenance must never fail a run
+                out[name]["drive_unavailable"] = f"{type(exc).__name__}: {exc}"
         return out
 
     def acquire(self, experiment: "Experiment") -> xr.Dataset:

@@ -36,6 +36,21 @@ from scqo_qm.experiments._flux_limits import (
 from conftest import _coupler, _flux_line
 
 
+def _opx_plus_z(**offsets):
+    """A flux line on an OPX+ analog output.
+
+    ``OPXPlusAnalogOutputPort`` carries the LF base fields and none of the FEM
+    ones — no ``output_mode``, no ``exponential_filter`` — which is exactly what
+    makes it indistinguishable from "no port at all" to a check that only looks
+    for ``output_mode``.
+    """
+    z = _flux_line(**offsets)
+    z.opx_output = type(
+        "OPXPlusPort", (), {"feedforward_filter": None, "feedback_filter": None,
+                            "delay": 0, "offset": None})()
+    return z
+
+
 def _z(amplitude, *, mode="direct", operation="const", **offsets):
     """A flux line carrying one op on a port of the given output mode."""
     z = _flux_line(**offsets)
@@ -193,7 +208,33 @@ def test_an_unknown_port_says_it_assumed_the_conservative_rail():
     z = _flux_line()
     z.operations = {}
     msg = rail_remedy(z, name="q3.z", needed_v=1.0, rail=0.5)
-    assert "no opx_output" in msg and "conservative" in msg
+    assert "does not describe an output port" in msg and "conservative" in msg
+
+
+def test_an_opx_plus_port_is_told_its_rail_is_fixed_not_that_it_can_be_upgraded():
+    """The remedy, not the number, is what the OPX+ case changes.
+
+    Its rail is 0.5 V — arithmetically the LF-FEM's ``direct`` value, so the old
+    fallback returned the right volts. What it returned with them was advice to
+    "run it in 'amplified' mode", a switch that does not exist on an OPX+, sent to
+    an operator who would then go looking for it. Same number, useless sentence.
+    """
+    z = _opx_plus_z()
+    msg = rail_remedy(z, name="q3.z", needed_v=1.0, rail=dac_rail_v(z))
+    assert "OPX+" in msg
+    assert "amplified" in msg and "no 'amplified' mode" in msg
+    assert "Narrow the window" in msg
+
+
+def test_the_opx_plus_rail_is_reported_as_a_finding_not_as_a_fallback():
+    """0.5 V reached two ways that must stay distinguishable: an identified OPX+
+    port, and a port the tree does not describe."""
+    identified = _opx_plus_z()
+    unknown = _flux_line()
+
+    assert dac_rail_v(identified) == dac_rail_v(unknown) == 0.5
+    assert "OPX+" in rail_remedy(identified, name="q.z", needed_v=1.0, rail=0.5)
+    assert "OPX+" not in rail_remedy(unknown, name="q.z", needed_v=1.0, rail=0.5)
 
 
 # ------------------------------------------------------------- the idle anchor

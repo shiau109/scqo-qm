@@ -222,9 +222,10 @@ FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
                     "q.z.opx_output.delay += fit",
             note="output-path delay of the flux line vs the drive line, "
                  "calibrated so a Z pulse and the XY drive it accompanies "
-                 "coincide. PORT-level (LFFEMAnalogOutputPort.delay, shared by "
-                 "everything on that DAC output) - same class as "
-                 "full_scale_power_dbm; on a per-qubit z wire it is per-qubit in "
+                 "coincide. PORT-level (LFAnalogOutputPort.delay, shared by "
+                 "everything on that DAC output) - on the shared LF base, so "
+                 "every baseband port has it, LF-FEM and OPX+ alike; on a "
+                 "per-qubit z wire it is per-qubit in "
                  "practice. Qblox counterpart: "
                  "hardware_options.latency_corrections[<port-clock>] (s), "
                  "Unrealized there until a Qblox xyz-delay probe exists",

@@ -1,4 +1,4 @@
-"""Self-test the scqo stack against a REAL QUAM state (OPX1000) — no hardware needed.
+"""Self-test the scqo stack against a REAL QUAM state — no hardware needed.
 
     python scripts/check_real_config.py D:\\qpu_data_dev\\5Q4C\\cd1\\qm_5q\\backend_config
     python scripts/check_real_config.py <state_dir> --qubits q1 q2
@@ -57,6 +57,7 @@ def main() -> int:
     from scqo.roster import parse_components
     from scqo.testing import SimulatedBackend
     from scqo_qm.backend.qm_backend import QMDeviceModel
+    from scqo_qm._family import tree_families
     from scqo_qm.backend.roster_gen import roster_toml_for
 
     # The driver resolves every name through the ROSTER (q1_ro -> the readout
@@ -66,10 +67,32 @@ def main() -> int:
     # `scqo run` uses.
     roster = parse_components(roster_toml_for(machine))
 
+    # WHICH hardware families this tree declares, before anything reads a knob.
+    # The snapshot below reports a knob this driver cannot realize as None, which
+    # is indistinguishable from "uncalibrated" -- so a self-test that printed the
+    # knobs without naming the families would reach its PASS line while quietly
+    # showing every absolute power as unset.
+    families = tree_families(machine)
+    print(f"      hardware: RF chain {families['rf_chain']}, "
+          f"flux ports {families['flux_port']}"
+          + (f", octaves {families['octaves']}" if "octaves" in families else ""))
+
     dm = QMDeviceModel(machine, roster)
     snap = dm.snapshot()
     for name, fields in snap.items():  # keyed by CHANNEL entity (q1_ro, q1_xy, ...)
         print(f"      {name}: {fields}")
+
+    # Absolute power is the one knob family whose vendor home is chain-specific,
+    # so an unreadable one here is a finding about the DRIVER, not the chip. Said
+    # out loud rather than left as a None among the other Nones.
+    unpriced = sorted(
+        name for name, fields in snap.items()
+        for field in ("readout_power_dbm", "drive_power_dbm")
+        if field in fields and fields[field] is None)
+    if unpriced:
+        print(f"      note: absolute power unavailable on {unpriced} - expected "
+              f"when the RF chain is not mw_fem; see power_context in the run "
+              f"record for the reason")
 
     # The two experiments below anchor on these knobs; a real lab state
     # carries uncalibrated qubits (value None), which are skipped, not run.
