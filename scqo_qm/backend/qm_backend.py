@@ -24,8 +24,10 @@ scqo_qm.quam_fields, shared with the qualibrate writebacks).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import warnings
 from contextlib import contextmanager
 from importlib.metadata import version as _dist_version
@@ -189,6 +191,48 @@ def _read_chain_power(channel: Any, operation: str, *, name: str, field: str,
     from quam_builder.tools.power_tools import get_output_power_mw_channel
 
     return float(get_output_power_mw_channel(channel, operation))
+
+
+def _octave_calibration_fingerprint(channel: Any, cache: dict) -> dict | None:
+    """Which mixer calibration was in force for ``channel``, for the run record.
+
+    The Octave's corrections live OUTSIDE ``state.json``, in a
+    ``calibration_db.json`` whose path is itself a QUAM field. So
+    ``vendor_config_snapshot`` -- a pure split of ``to_dict()`` -- cannot capture
+    them, and two runs with byte-identical QUAM state can have been taken with
+    different mixer corrections. Without this the record could not tell them
+    apart, which on an analog up-conversion chain is most of the difference
+    between a clean spectrum and a mirrored one.
+
+    Digest and mtime, never the contents: the file is a cache of measured
+    corrections, not configuration, and a run record is not where it belongs.
+    ``cache`` is per-call, so one feedline's DB is hashed once rather than once
+    per qubit on it.
+    """
+    converter = getattr(channel, "frequency_converter_up", None)
+    octave = getattr(converter, "octave", None)
+    if octave is None:
+        return None
+    declared = getattr(octave, "calibration_db_path", None)
+    folder = os.path.abspath(declared) if declared else os.getcwd()
+    path = os.path.join(folder, "calibration_db.json")
+    if path in cache:
+        return cache[path]
+
+    out: dict[str, Any] = {"path": path, "declared": bool(declared)}
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        # Not an error to report here: the file appears when the calibration is
+        # first run, and its ABSENCE is exactly what a later reader wants to see
+        # recorded against a run whose spectra look mirrored.
+        out["present"] = False
+    else:
+        out["present"] = True
+        out["sha16"] = hashlib.sha256(raw).hexdigest()[:16]
+        out["mtime"] = os.path.getmtime(path)
+    cache[path] = out
+    return out
 
 
 def _coarse_power_knob(channel: Any, *, name: str, field: str,
@@ -1069,12 +1113,17 @@ class QMBackend(Backend):
         """This driver's vendor operator CLIs (see fieldmap) — the other half of
         "what can I reach on THIS instrument that is not a scqo command".
 
-        Scoped to what this tree can actually reach. ``apply_distortion`` writes
-        an LF-FEM ``exponential_filter``; on a tree whose flux lines are all OPX+
-        analog outputs there is no such field, so the command can only refuse --
-        and an inventory whose whole purpose is DISCOVERY must not advertise a
-        door that is walled up. A tree with no flux at all, or with any LF-FEM
-        line, keeps it.
+        Scoped to what this tree can actually reach, because an inventory whose
+        whole purpose is DISCOVERY must not advertise a door that is walled up.
+        Two commands are chain-specific:
+
+        * ``apply_distortion`` writes an LF-FEM ``exponential_filter``. On a tree
+          whose flux lines are all OPX+ analog outputs there is no such field, so
+          it can only refuse. A tree with no flux at all, or with any LF-FEM
+          line, keeps it.
+        * ``calibrate_octave`` calibrates an analog up-conversion mixer. A tree
+          with no Octave has no mixer, and the vendor call would raise naming the
+          element rather than the reason.
 
         The tuple is otherwise returned as-is, unlike ``vendor_only``'s defensive
         ``dict()``: a tuple of frozen dataclasses is already immutable, and
@@ -1084,10 +1133,16 @@ class QMBackend(Backend):
         machine = getattr(self, "_machine", None)
         if machine is None:
             return OPERATOR_COMMANDS
-        flux = set(tree_families(machine)["flux_port"])
+        families = tree_families(machine)
+        hidden: set[str] = set()
+        flux = set(families["flux_port"])
         if flux and flux <= {FLUX_OPX_PLUS}:
-            return tuple(c for c in OPERATOR_COMMANDS if c.name != "apply_distortion")
-        return OPERATOR_COMMANDS
+            hidden.add("apply_distortion")
+        if RF_OCTAVE not in families["rf_chain"]:
+            hidden.add("calibrate_octave")
+        if not hidden:
+            return OPERATOR_COMMANDS
+        return tuple(c for c in OPERATOR_COMMANDS if c.name not in hidden)
 
     def _drive_views(self, targets: list[str]) -> dict[str, EntityView]:
         """Every run target's DEFAULT drive view, keyed by channel name.
@@ -1223,6 +1278,8 @@ class QMBackend(Backend):
         that is precisely what an Octave tree used to write for every qubit of every
         run: provenance that never failed and never said anything either.
         """
+        cal_cache: dict = {}
+
         def view_or_none(name: str, kind: str):
             """The target's default channel view, or None when it serves no such one."""
             try:
@@ -1256,6 +1313,9 @@ class QMBackend(Backend):
                     out[name]["readout_lo_freq_hz"] = float(lo)
                 out[name].update(_coarse_power_knob(
                     resonator, name=name, field="readout_power_dbm", prefix=""))
+                fingerprint = _octave_calibration_fingerprint(resonator, cal_cache)
+                if fingerprint is not None:
+                    out[name]["octave_calibration_db"] = fingerprint
                 out[name]["readout_power_dbm"] = _read_chain_power(
                     resonator, quam_fields.READOUT_OPERATION, name=name,
                     field="readout_power_dbm", quantity="readout")

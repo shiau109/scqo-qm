@@ -499,6 +499,29 @@ def octave_frequency_problems(machine: Any) -> list[str]:
     return problems
 
 
+def octave_calibration_warnings(machine: Any) -> list[str]:
+    """Advisories about where each Octave's mixer calibration will be looked for.
+
+    Advisory rather than fatal, and deliberately: an unset
+    ``calibration_db_path`` still WORKS as long as every process starts in the
+    same directory, so refusing would block a setup that measures fine today. It
+    is fragile rather than broken -- which is precisely the case a warning is
+    for, and precisely the case nothing said anything about before.
+    """
+    out: list[str] = []
+    for name, octave in (getattr(machine, "octaves", {}) or {}).items():
+        if getattr(octave, "calibration_db_path", None):
+            continue
+        out.append(
+            f"octave {name!r} has no calibration_db_path, so quam falls back to "
+            f"the process working directory: its mixer calibration follows "
+            f"wherever scqo was launched from, and a run started elsewhere "
+            f"silently finds none and plays uncalibrated. Set "
+            f"octaves.{name}.calibration_db_path in state.json to the setup's "
+            f"own backend_config/ folder")
+    return out
+
+
 def octave_output_problems(machine: Any) -> list[str]:
     """Every ACTIVE Octave channel whose RF switch is off.
 

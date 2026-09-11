@@ -51,6 +51,7 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
         flux_headroom_problems,
         flux_headroom_warnings,
         flux_point_problems,
+        octave_calibration_warnings,
         octave_frequency_problems,
         octave_output_problems,
         rf_frequency_reference_problems,
@@ -86,7 +87,8 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
     # that kept QUAM's default reference for RF_frequency reads right and writes
     # never - the failure surfaces at the first writeback, mid-run. The audit
     # above cannot see it (it reads, and the read resolves), so it needs its own.
-    for advisory in flux_headroom_warnings(backend.machine):
+    for advisory in (flux_headroom_warnings(backend.machine)
+                     + octave_calibration_warnings(backend.machine)):
         warnings.warn(advisory, RuntimeWarning, stacklevel=2)
 
     complaints = [

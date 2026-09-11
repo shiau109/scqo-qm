@@ -743,6 +743,28 @@ OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
                 "--clear (fresh-line reset before a clean-slate "
                 "characterization)  --dry-run  --config PATH"),
     OperatorCommand(
+        name="calibrate_octave",
+        command="python -m scqo_qm.backend.calibrate_octave [--target <qubit>...]",
+        doc="Octave trees only. Calibrate the Octave up-conversion mixers (LO "
+            "leakage and image) for the active device/setup. An Octave mixes a "
+            "baseband IQ pair up with an analog mixer, so every output carries "
+            "leakage and an image sideband until it is calibrated at the exact "
+            "(RF output, LO, gain) and (LO, IF) it will run at; an MW-FEM "
+            "synthesizes microwave directly and has no such step. Re-run after "
+            "any LO change (including one forced by a shared synthesizer), any "
+            "GAIN change (gain is part of the cache key - unlike an MW-FEM's "
+            "full_scale_power_dbm, which keys nothing), a new IF, or a cold "
+            "start. Takes the cluster while it runs; not destructive.",
+        options="--target QUBIT... (default: every active qubit)  "
+                "--readout-only / --drive-only  --timeout S  --dry-run (say "
+                "what and where, calibrate nothing)  --config PATH",
+        caution="The results land in calibration_db.json, which is NOT part of "
+                "state.json - a setup snapshot does not capture it, so two runs "
+                "with identical QUAM state can carry different mixer "
+                "corrections. If octaves.<name>.calibration_db_path is unset, "
+                "quam falls back to os.getcwd() and the file follows whatever "
+                "directory you launched from."),
+    OperatorCommand(
         name="close_qm",
         command="python -m scqo_qm.backend.close_qm",
         doc="Halt running jobs and close the open Quantum Machines on the "

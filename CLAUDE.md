@@ -31,7 +31,17 @@ scqo_qm/
                          #   kind) + VENDOR_ONLY, whose coupled/edit/counterpart carry the
                          #   OPERATIONAL half of a hand edit (what moves with it, what to
                          #   satisfy first, Qblox's name for it) + OPERATOR_COMMANDS, the
-                         #   two CLIs below. Both inventories render in `scqo state --fields`
+                         #   CLIs below. Both inventories render in `scqo state --fields`,
+                         #   FILTERED to the tree's RF chain: VENDOR_ONLY splits COMMON /
+                         #   MW_FEM / OCTAVE (the exported union is the complete inventory,
+                         #   which is what the structural self-checks run against), and a
+                         #   chain-specific CLI is hidden where it could only refuse
+    _power.py            # absolute-power POLICY, pure: the Octave (gain, amplitude) solve.
+                         #   Holds the gain and spends the amplitude, because gain is part
+                         #   of the mixer calibration's cache key and is shared by every
+                         #   channel on one RF output - so IDEMPOTENCE, not accuracy, is the
+                         #   property under test. MW-FEM's grid solve stays in qm_backend.
+                         #   The hardware FACTS it builds on live in scqo_qm/_octave.py
     roster_gen.py        # roster_toml_for(machine): derive a schema-3 roster from a live QUAM
                          #   tree (test fixtures + scripts/check_real_config.py; the REAL roster
                          #   is <data_root>/<device>/components.toml)
@@ -53,6 +63,17 @@ scqo_qm/
                          #   Listed by `scqo state --fields`, which is the only
                          #   place an operator can DISCOVER it - `scqo -h` cannot
                          #   show a command that is not a scqo subcommand.
+    calibrate_octave.py  # operator CLI: python -m scqo_qm.backend.calibrate_octave -
+                         #   calibrate the Octave up-conversion mixers (LO leakage +
+                         #   image) for the active setup. An MW-FEM synthesizes its own
+                         #   microwave and has no such step, which is why nothing here
+                         #   ever called for one; on an Octave tree, skipping it means
+                         #   every measurement runs uncalibrated with nothing saying so.
+                         #   Re-run after any LO change, any GAIN change (gain keys the
+                         #   cache, unlike full_scale_power_dbm which keys nothing), a
+                         #   new IF, or a cold start. Results land in calibration_db.json,
+                         #   OUTSIDE state.json - so vendor_config_snapshot cannot capture
+                         #   them, and power_context records the digest instead.
   experiments/
     __init__.py          # one import line per experiment module so @register runs (manual;
                          #   tests/test_experiment_registration.py enforces completeness both
@@ -70,6 +91,19 @@ scqo_qm/
     _qc_populations.py   # shared swap-reset population math
     _readout_fidelity.py # shared SSRO builder (single_shot_readout / _gef / thermal_population)
     _resonator_spectroscopy.py  # shared 1D builder (resonator_spectroscopy / _power_chain)
+  _family.py             # which hardware family a channel declares - duck-typed, never
+                         #   isinstance (the suite builds channels as SimpleNamespace and
+                         #   pins the flux guards against a port that is None). TWO
+                         #   independent axes, not "OPX+ vs OPX1000": the RF chain
+                         #   (mw_fem / octave / external_mixer) and the baseband flux port
+                         #   (lf_fem / opx_plus). An OPX1000 can drive an Octave, so the
+                         #   chassis is the wrong thing to branch on. Unknown reports as
+                         #   None and is never promoted to a family
+  _octave.py             # what an Octave IS: the LO grid, the +/-400 MHz IF window, the
+                         #   DAC ceiling, the SHARED synthesizers (synth2 drives RF2+RF3
+                         #   from one source - no MW-FEM analogue). Facts only; the policy
+                         #   built on them is backend/_power.py. Package root because
+                         #   experiments/ cannot import from backend/ without cycling
   quam_fields.py         # the single neutral-field <-> QUAM mapping + whole-tree audits
   components/            # lab pulse shapes + macros (FlatTopCosinePulse, ISwapImplementation,
                          #   ParametricReset - PERSISTED as __class__ in state.json: moving or
