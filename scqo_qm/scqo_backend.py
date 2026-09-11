@@ -51,6 +51,8 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
         flux_headroom_problems,
         flux_headroom_warnings,
         flux_point_problems,
+        octave_frequency_problems,
+        octave_output_problems,
         rf_frequency_reference_problems,
     )
     from scqo_qm.backend.qm_backend import QMBackend
@@ -101,6 +103,13 @@ def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
         ("RF frequencies", "are stored as QUAM references rather than numbers, so "
                            "they read fine and refuse every writeback",
          rf_frequency_reference_problems(backend.machine)),
+        ("Octave frequencies", "ask the hardware for LOs or intermediate "
+                               "frequencies it cannot produce, which nothing in "
+                               "the vendor stack checks",
+         octave_frequency_problems(backend.machine)),
+        ("Octave RF switches", "are off, so those lines emit nothing and the run "
+                               "returns a flat line with no error",
+         octave_output_problems(backend.machine)),
     ]
     report = "\n".join(
         f"{what} in {folder / 'state.json'} {why}:\n  - " + "\n  - ".join(problems)

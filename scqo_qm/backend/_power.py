@@ -25,6 +25,11 @@ warning. This is the same shape as the Qblox driver's ``output_att`` + pulse
 amplitude solve: the coarse knob takes the decades, the amplitude carries the
 exact residual, and the residual is where a per-target value can live at all.
 
+This module is the POLICY. The hardware FACTS it is built on -- the gain grid,
+the DAC ceiling, the mixer's optimum drive -- live in ``scqo_qm._octave``, which
+is also where the LO grid and IF window the audits use live. One home per fact,
+so a policy change never means re-deriving the instrument.
+
 Pure: no quam import, no channel object, no warnings raised. The caller applies
 the answer and decides how loudly to talk about it, which is what makes every
 case below testable without an instrument or a tree.
@@ -35,23 +40,13 @@ from __future__ import annotations
 import math
 from typing import NamedTuple, Optional
 
-#: The Octave gain grid (dB). From the vendor's own bounds -- ``power_tools``
-#: refuses outside [-20, 20] -- and the 0.5 dB step the hardware quantizes to.
-OCTAVE_GAIN_MIN = -20.0
-OCTAVE_GAIN_MAX = 20.0
-OCTAVE_GAIN_STEP = 0.5
-
-#: Hard ceiling on the IF amplitude the OPX feeds the Octave (V). The OPX+ DAC
-#: rail; ``power_tools.set_output_power_iq_channel`` refuses outside [-0.5, 0.5)
-#: for the same reason, and the value matches ``quam_config/instrument_limits.py``
-#: (``max_wf_amplitude`` = 0.5 V for an IQChannel, against 1.0 NORMALIZED for an
-#: MW one -- the two families do not even share the unit).
-OCTAVE_MAX_AMP_V = 0.5
-
-#: Where a re-staged gain aims to put the amplitude (V): the Octave
-#: up-conversion mixer's optimum drive, per
-#: ``quam_config/populate_quam_opxp_octave.py::get_octave_gain_and_amplitude``.
-OCTAVE_TARGET_AMP_V = 0.125
+from scqo_qm._octave import (
+    GAIN_MAX_DB,
+    GAIN_MIN_DB,
+    GAIN_STEP_DB,
+    MAX_IF_AMP_V,
+    OPTIMUM_IF_AMP_V,
+)
 
 #: Below this the amplitude is using under 1% of the DAC, so quantization noise
 #: starts costing more than a gain change does. Deliberately far below the
@@ -82,14 +77,14 @@ def snap_gain(gain_db: float) -> float:
     solving an amplitude against a gain the hardware will not actually take is a
     silent half-dB error in everything downstream.
     """
-    snapped = round(float(gain_db) / OCTAVE_GAIN_STEP) * OCTAVE_GAIN_STEP
-    return min(OCTAVE_GAIN_MAX, max(OCTAVE_GAIN_MIN, snapped))
+    snapped = round(float(gain_db) / GAIN_STEP_DB) * GAIN_STEP_DB
+    return min(GAIN_MAX_DB, max(GAIN_MIN_DB, snapped))
 
 
 #: The highest power the chain can reach: top gain at just under the DAC rail.
-OCTAVE_MAX_POWER_DBM = OCTAVE_GAIN_MAX + volts_to_dbm(OCTAVE_MAX_AMP_V)
+OCTAVE_MAX_POWER_DBM = GAIN_MAX_DB + volts_to_dbm(MAX_IF_AMP_V)
 #: The lowest power reachable without dropping under the amplitude floor.
-OCTAVE_MIN_POWER_DBM = OCTAVE_GAIN_MIN + volts_to_dbm(OCTAVE_MIN_AMP_V)
+OCTAVE_MIN_POWER_DBM = GAIN_MIN_DB + volts_to_dbm(OCTAVE_MIN_AMP_V)
 
 
 class OctaveChain(NamedTuple):
@@ -117,31 +112,31 @@ def solve_octave_chain(
     """
     held = snap_gain(current_gain_db)
     amplitude = dbm_to_volts(target_dbm - held)
-    if OCTAVE_MIN_AMP_V <= amplitude < OCTAVE_MAX_AMP_V:
+    if OCTAVE_MIN_AMP_V <= amplitude < MAX_IF_AMP_V:
         return OctaveChain(held, amplitude, False, None)
 
     if not OCTAVE_MIN_POWER_DBM <= target_dbm <= OCTAVE_MAX_POWER_DBM:
         raise ValueError(
             f"{name}: {target_dbm} dBm is outside what an Octave output can "
             f"produce ([{OCTAVE_MIN_POWER_DBM:.1f}, {OCTAVE_MAX_POWER_DBM:.1f}] "
-            f"dBm, gain [{OCTAVE_GAIN_MIN}, {OCTAVE_GAIN_MAX}] dB into a "
-            f"{OCTAVE_MAX_AMP_V} V DAC). Change the fixed attenuation on that "
+            f"dBm, gain [{GAIN_MIN_DB}, {GAIN_MAX_DB}] dB into a "
+            f"{MAX_IF_AMP_V} V DAC). Change the fixed attenuation on that "
             f"line instead.")
 
-    staged = snap_gain(target_dbm - volts_to_dbm(OCTAVE_TARGET_AMP_V))
+    staged = snap_gain(target_dbm - volts_to_dbm(OPTIMUM_IF_AMP_V))
     amplitude = dbm_to_volts(target_dbm - staged)
-    if not 0.0 < amplitude < OCTAVE_MAX_AMP_V:
+    if not 0.0 < amplitude < MAX_IF_AMP_V:
         # Only reachable at a CLAMPED gain, where the optimum-seeking step above
         # cannot land the amplitude in range.
         raise ValueError(
             f"{name}: {target_dbm} dBm needs amplitude {amplitude:.4f} V at the "
-            f"clamped gain of {staged} dB, past the {OCTAVE_MAX_AMP_V} V DAC "
+            f"clamped gain of {staged} dB, past the {MAX_IF_AMP_V} V DAC "
             f"rail. Change the fixed attenuation on that line instead.")
 
     direction = "up" if staged > held else "down"
     reason = (
         f"amplitude alone could not reach {target_dbm} dBm at gain {held} dB "
         f"(it would need {dbm_to_volts(target_dbm - held):.4f} V, outside the "
-        f"[{OCTAVE_MIN_AMP_V}, {OCTAVE_MAX_AMP_V}) V window), so the gain moved "
+        f"[{OCTAVE_MIN_AMP_V}, {MAX_IF_AMP_V}) V window), so the gain moved "
         f"{direction} to {staged} dB")
     return OctaveChain(staged, amplitude, True, reason)

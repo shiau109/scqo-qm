@@ -38,6 +38,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from scqo_qm._family import RF_OCTAVE, rf_chain
+from scqo_qm._octave import (
+    LO_TOLERANCE_HZ,
+    SYNTH_OUTPUTS,
+    if_window_problem,
+    lo_grid_problem,
+    synth_of_rf_output,
+)
+
 #: The operation whose amplitude is the calibrated pi pulse (the neutral ``pi_amp``).
 PI_OPERATION = "x180"
 
@@ -366,6 +375,159 @@ def drive_frequency_problems(machine: Any) -> list[str]:
                 f"the knob would show a number the hardware never emits. Edit "
                 f"state.json so both hold the intended value (the audit cannot know "
                 f"which one is right).")
+    return problems
+
+
+def _octave_channels(machine: Any):
+    """``(label, channel)`` for every drive/readout channel on an Octave chain.
+
+    Labels are state.json paths, because every problem below ends in a hand edit
+    of that file and a message naming a Python attribute would leave the operator
+    to translate.
+    """
+    for name, qubit in getattr(machine, "qubits", {}).items():
+        for line in ("xy", "resonator"):
+            channel = getattr(qubit, line, None)
+            if channel is not None and rf_chain(channel) == RF_OCTAVE:
+                yield f"qubits.{name}.{line}", channel
+
+
+def octave_frequency_problems(machine: Any) -> list[str]:
+    """Every Octave channel whose frequencies the hardware cannot actually produce.
+
+    **Nothing in the vendor stack checks any of this.** There is no LO-grid check
+    and no IF-window check anywhere in ``qm``, ``quam`` or ``quam_builder``; the
+    only guards that ever existed are two ``assert`` lines in
+    ``quam_config/populate_quam_opxp_octave.py``, which run when a tree is first
+    seeded and never again. An MW-FEM tree needs none of this -- its LO is a port
+    field inside a declared band, and the instrument rejects a band that does not
+    cover it -- so this audit has no MW counterpart and did not exist before.
+
+    Four rules, in the order they bite:
+
+    1. the up-converter must HAVE an LO;
+    2. that LO must be on the 250 MHz grid inside [2, 18] GHz;
+    3. ``IF = RF - LO`` must stay inside +/-400 MHz -- on an Octave the IF is a
+       real analog baseband signal, not a digital offset inside a band;
+    4. the down-converter LO must equal the up-converter's. UNSET is the
+       dangerous case and it is SILENT: quam's ``apply_to_config`` omits the whole
+       ``RF_inputs`` entry when it is not a number, so the generated config simply
+       has no receive path and reports no error.
+
+    Plus the constraint with no MW-FEM analogue at all: two RF outputs sharing a
+    SYNTHESIZER are forced to the same LO, so a tree asking for two is asking for
+    something the Octave cannot do -- and the MW-FEM habit of thinking in
+    independently tunable per-port LOs is exactly what makes it surprising.
+
+    Pure (no I/O, no QUA); the caller decides how loudly to fail. Skips what it
+    cannot judge -- an unset RF, a converter with no id -- because an audit that
+    guesses is worse than one that stays quiet. Empty list = compliant.
+    """
+    problems: list[str] = []
+    by_synth: dict[tuple[Any, Any], list[tuple[str, float]]] = {}
+
+    for label, channel in _octave_channels(machine):
+        up = getattr(channel, "frequency_converter_up", None)
+        lo = _finite_hz(getattr(up, "LO_frequency", None))
+        if lo is None:
+            problems.append(
+                f"{label}: its Octave up-converter has no LO frequency, so the "
+                f"tone has nothing to mix up to. Set "
+                f"octaves.<name>.RF_outputs.<n>.LO_frequency in state.json")
+            continue
+
+        reason = lo_grid_problem(lo)
+        if reason is not None:
+            problems.append(
+                f"{label}: {reason}. The synthesizer cannot produce it; pick the "
+                f"nearest grid point and re-check IF = RF - LO")
+
+        rf = _finite_hz(getattr(channel, "RF_frequency", None))
+        if rf is not None:
+            reason = if_window_problem(rf, lo)
+            if reason is not None:
+                problems.append(
+                    f"{label}: {reason}. Move the LO (it is shared by everything "
+                    f"on that RF output, and by the other output on its "
+                    f"synthesizer) rather than the RF, which is the physics")
+
+        rf_output = getattr(up, "id", None)
+        if rf_output is not None:
+            octave = getattr(getattr(up, "octave", None), "name", None)
+            by_synth.setdefault(
+                (octave, synth_of_rf_output(rf_output)), []).append((label, lo))
+
+        down = getattr(channel, "frequency_converter_down", None)
+        if down is None:
+            continue
+        down_lo = _finite_hz(getattr(down, "LO_frequency", None))
+        if down_lo is None:
+            problems.append(
+                f"{label}: its Octave DOWN-converter has no LO frequency. quam "
+                f"then omits the whole RF_inputs entry from the generated config, "
+                f"so the run has no receive path at all and nothing says so - it "
+                f"is the quietest failure on this chain. Point "
+                f"octaves.<name>.RF_inputs.<n>.LO_frequency at the up-converter's "
+                f"LO (normally a QUAM reference, which is what keeps the two from "
+                f"drifting apart)")
+        elif abs(down_lo - lo) > LO_TOLERANCE_HZ:
+            problems.append(
+                f"{label}: the Octave down-converter LO is {down_lo / 1e9:g} GHz "
+                f"but the up-converter runs at {lo / 1e9:g} GHz. Demodulation is "
+                f"referenced to the down-converter, so every phase and both "
+                f"quadratures are wrong by the difference. They must be equal - "
+                f"prefer repairing the QUAM reference over writing a second "
+                f"literal")
+
+    for (octave, synth), members in sorted(
+            by_synth.items(), key=lambda kv: str(kv[0])):
+        if synth is None or len(members) < 2:
+            continue
+        distinct = {round(lo, 3) for _, lo in members}
+        if len(distinct) > 1:
+            where = ", ".join(f"{label} at {lo / 1e9:g} GHz" for label, lo in members)
+            problems.append(
+                f"octave {octave!r} synth{synth} drives RF outputs "
+                f"{SYNTH_OUTPUTS[synth]} from ONE synthesizer, but this tree asks "
+                f"it for {len(distinct)} different LOs ({where}). Unlike an "
+                f"MW-FEM, whose ports pair only for their band and each keep "
+                f"their own upconverter_frequency, these outputs cannot be tuned "
+                f"apart. Re-wire onto outputs on different synthesizers "
+                f"(synth1: RF1, synth2: RF2+RF3, synth3: RF4+RF5), or give both "
+                f"lines the same LO and split them in the IF")
+
+    return problems
+
+
+def octave_output_problems(machine: Any) -> list[str]:
+    """Every ACTIVE Octave channel whose RF switch is off.
+
+    ``OctaveUpConverter.output_mode`` defaults to ``always_off``, so a tree
+    assembled without setting it emits nothing at all -- no error at build, none
+    at run, and a measurement that returns a clean flat line. Restricted to
+    ``active_qubits`` on purpose: parking a line by switching its output off is
+    legitimate, and refusing it everywhere would block a config someone chose.
+
+    ``triggered`` / ``triggered_reversed`` are not flagged; they are a real mode
+    driven by digital markers, which QUAM wires up.
+    """
+    problems: list[str] = []
+    try:
+        active = {q.name for q in getattr(machine, "active_qubits", [])}
+    except Exception:
+        active = set()
+    for label, channel in _octave_channels(machine):
+        if label.split(".")[1] not in active:
+            continue
+        up = getattr(channel, "frequency_converter_up", None)
+        if getattr(up, "output_mode", None) != "always_off":
+            continue
+        problems.append(
+            f"{label}: its Octave RF switch is 'always_off', so that line emits "
+            f"nothing - the run would complete and return a flat line with no "
+            f"error anywhere. Set octaves.<name>.RF_outputs.<n>.output_mode to "
+            f"'always_on' in state.json (this is QUAM's DEFAULT value, so a "
+            f"hand-assembled tree that never set it lands here)")
     return problems
 
 
