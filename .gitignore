@@ -24,3 +24,7 @@ temp/
 # intentionally NOT ignored here. Do not edit the vendored files in place;
 # update upstream and re-run `python sync_official.py`.
 **/quam_state_6q
+# The OPX+/Octave tree is BUILT, not stored: scripts/make_opxp_fixture.py
+# is the tracked artifact, and the tests build into a tmp dir so a fresh
+# clone needs no local state at all.
+**/quam_state_opxp

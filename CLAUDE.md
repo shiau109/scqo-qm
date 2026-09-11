@@ -2,8 +2,10 @@
 
 ## Project Overview
 Two products in one repo (renamed from LCHQMDriver in the v1 restructure):
-1. **`scqo_qm/`** — the Quantum Machines OPX1000 backend for **`scqo`**, the vendor-neutral
-   experiment API shared with the Qblox driver ([scqo-qblox](https://github.com/shiau109/scqo-qblox)), so the same experiment
+1. **`scqo_qm/`** — the Quantum Machines backend for **`scqo`**, the vendor-neutral
+   experiment API shared with the Qblox driver. It serves BOTH QM RF chains through
+   one backend name: MW-FEM (OPX1000) and Octave (OPX+, or an OPX1000 with LF-FEMs).
+   The chassis is the wrong axis to reason about - see [OPX-PLUS.md](OPX-PLUS.md) ([scqo-qblox](https://github.com/shiau109/scqo-qblox)), so the same experiment
    runs on either instrument through one `Session`. scqo is a HARD dependency.
 2. **Vendored official qualibrate calibrations** (`calibrations/` + `calibration_utils/`, copied in
    by `sync_official.py`) — the qualibrate GUI path, official nodes only. The custom LCH_* qualibrate
