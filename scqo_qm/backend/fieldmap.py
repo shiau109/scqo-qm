@@ -103,16 +103,24 @@ FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
             note="the saturation (spec) drive amplitude - the drive_power_dbm "
                  "chain solve's residual"),
         "drive_power_dbm": VendorBinding(
-            path="q.xy.opx_output.full_scale_power_dbm "
+            path="MW-FEM: q.xy.opx_output.full_scale_power_dbm  |  Octave: "
+                 "q.xy.frequency_converter_up.gain  -- either one "
                  "+ q.xy.operations['saturation'].amplitude",
             unit="dBm + amp",
-            convert="solve the DRIVE chain (power_tools): SMALLEST full_scale_power_dbm "
-                    "on the -11..+16 dBm grid (3 dB steps) keeping the saturation "
-                    "amplitude <= 0.5; the amplitude carries the exact residual",
+            convert="solve the DRIVE chain, coarse knob + amplitude residual, but "
+                    "with OPPOSITE policies. MW-FEM: the SMALLEST "
+                    "full_scale_power_dbm on the -11..+16 dBm grid (3 dB steps) "
+                    "keeping the saturation amplitude <= 0.5. Octave: HOLD the gain "
+                    "(-20..+20 dB, 0.5 dB steps) wherever the amplitude (volts, "
+                    "< 0.5 V) can absorb the change, and re-stage it only when it "
+                    "cannot -- the gain keys the mixer calibration, so moving it "
+                    "invalidates that RF output's stored correction. Any other RF "
+                    "chain refuses by name",
             coupled=("drive_amp",),
-            note="the xy full scale is PORT-level and shared by every xy operation: "
-                 "while it is off its standing value the stored pi_amp means a "
-                 "different power (qubit_spectroscopy sets it and reverts exactly)",
+            note="the coarse knob is PORT-level (MW-FEM) or RF-OUTPUT-level "
+                 "(Octave) and shared by every xy operation either way: while it "
+                 "is off its standing value the stored pi_amp means a different "
+                 "power (qubit_spectroscopy sets it and reverts exactly)",
         ),
     },
     "readout": {
@@ -122,14 +130,21 @@ FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
         "readout_amp": VendorBinding(
             path="q.resonator.operations['readout'].amplitude", unit=""),
         "readout_power_dbm": VendorBinding(
-            path="q.resonator.opx_output.full_scale_power_dbm "
+            path="MW-FEM: q.resonator.opx_output.full_scale_power_dbm  |  Octave: "
+                 "q.resonator.frequency_converter_up.gain  -- either one "
                  "+ q.resonator.operations['readout'].amplitude",
             unit="dBm + amp",
-            convert="solve the output chain (power_tools): SMALLEST full_scale_power_dbm "
-                    "on the -11..+16 dBm grid (3 dB steps) keeping the amplitude <= 0.5; "
-                    "the amplitude carries the exact residual",
+            convert="solve the output chain, coarse knob + amplitude residual, but "
+                    "with OPPOSITE policies. MW-FEM: the SMALLEST "
+                    "full_scale_power_dbm on the -11..+16 dBm grid (3 dB steps) "
+                    "keeping the amplitude <= 0.5. Octave: HOLD the gain wherever "
+                    "the amplitude (volts, < 0.5 V) can absorb the change, because "
+                    "the gain keys the mixer calibration AND is shared by every "
+                    "qubit on a multiplexed feedline. Any other RF chain refuses "
+                    "by name",
             coupled=("readout_amp",),
-            note="MW-FEM full-scale grid: -11..+16 dBm in 3 dB steps",
+            note="coarse grids: MW-FEM -11..+16 dBm in 3 dB steps; Octave gain "
+                 "-20..+20 dB in 0.5 dB steps",
         ),
         "readout_duration_s": VendorBinding(
             path="q.resonator.operations['readout'].length", unit="ns",
@@ -328,7 +343,7 @@ OP_KNOB_UNREALIZED: dict[str, Unrealized] = {
 #: the setup's state.json with QUAM tools). Each entry carries its placement-rule
 #: kind (scqo state --rule): realizer / candidate / vendor / unique. Doubles as
 #: the neutral-field promotion backlog (candidates pre-declare their convention).
-VENDOR_ONLY: dict[str, VendorOnly] = {
+VENDOR_ONLY_COMMON: dict[str, VendorOnly] = {
     "readout_length": VendorOnly(
         path="q.resonator.operations['readout'].length", unit="ns", kind="realizer",
         doc="readout pulse length - realizes the TRACKED readout_duration_s. The "
@@ -359,89 +374,6 @@ VENDOR_ONLY: dict[str, VendorOnly] = {
     # reset_qubit_active). resonator_spectroscopy now calibrates it from the
     # measured linewidth; the governed write is
     # scqo set QUBIT.readout_depletion_s=... .
-    "readout_upconverter_frequency": VendorOnly(
-        path="q.resonator.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
-        doc="readout LO - the MW-FEM upconverter, PORT-level (state.json "
-            "ports.mw_outputs.<con>.<fem>.<port>) and shared by everything on "
-            "that output; many LO/IF splits give the SAME RF, so SCQO owns only "
-            "the RF (readout_freq_hz) and never moves the LO in a chain solve",
-        coupled=("downconverter_frequency", "readout_band"),
-        edit="move it so IF = RF - LO stays in range and readout_band covers "
-             "the target; downconverter_frequency MUST move with it or "
-             "demodulation breaks",
-        counterpart="modulation_frequencies lo_freq"),
-    "drive_upconverter_frequency": VendorOnly(
-        path="q.xy.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
-        doc="drive LO - PORT-level MW-FEM upconverter, shared by everything on "
-            "that output",
-        coupled=("drive_band",),
-        edit="keep IF = f_01 - LO in range and drive_band matching"),
-    "downconverter_frequency": VendorOnly(
-        path="q.resonator.opx_input.downconverter_frequency", unit="Hz", kind="vendor",
-        doc="receive-side downconversion LO on the MW input port, equal to the "
-            "readout upconverter - PORT-level. No example value quoted on "
-            "purpose: the old 'chipA: 6.06 GHz' had rotted two revisions deep "
-            "(the repo's dev state runs 5.95 GHz, the live chipA config "
-            "5.1 GHz) while the EQUALITY, which is the durable claim, held "
-            "throughout",
-        coupled=("readout_upconverter_frequency", "downconverter_band"),
-        edit="it MUST track readout_upconverter_frequency or demodulation "
-             "breaks, and downconverter_band must cover it",
-        counterpart="none - Qblox has no separate knob (NCO handles it)"),
-    "readout_band": VendorOnly(
-        path="q.resonator.opx_output.band", unit="", kind="vendor",
-        doc="which MW-FEM Nyquist band the READOUT output port runs in "
-            "(chipA: 2) - a PORT-level hardware MODE chosen so the band covers "
-            "the readout LO, not a calibration outcome. broadband_resonator_"
-            "spectroscopy reads it live to derive the LO limits it may step "
-            "within. Coverage is the INSTRUMENT's call: a band that does not "
-            "cover the frequency comes back as a QM error, so no table here "
-            "second-guesses it",
-        coupled=("readout_upconverter_frequency",),
-        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
-             "QUAM tools. The MW-FEM pairs ports (2,3) (4,5) (6,7) and BOTH "
-             "ports of a pair must carry the same band (see experiments/"
-             "broadband_qubit_spectroscopy.py::_partner_port_id); "
-             "quam_config/populate_quam_lf_mw_fems.py::get_band(freq) is the "
-             "derivation the lab seeds from"),
-    "drive_band": VendorOnly(
-        path="q.xy.opx_output.band", unit="", kind="vendor",
-        doc="the same PORT-level hardware mode on the DRIVE output port "
-            "(chipA: 1), chosen so the band covers the drive LO. "
-            "broadband_qubit_spectroscopy WRITES it run-scoped - one value per "
-            "frequency segment - and restores the original in a finally. "
-            "Coverage is the INSTRUMENT's call: a band that does not cover the "
-            "frequency comes back as a QM error",
-        coupled=("drive_upconverter_frequency",),
-        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
-             "QUAM tools; BOTH ports of a MW-FEM pair (2,3) (4,5) (6,7) must "
-             "carry the same band"),
-    "downconverter_band": VendorOnly(
-        path="q.resonator.opx_input.band", unit="", kind="vendor",
-        doc="which MW-FEM band the readout INPUT port runs in (chipA: 2, "
-            "matching the output side) - PORT-level; the receive band must "
-            "cover downconverter_frequency, which the instrument enforces",
-        coupled=("downconverter_frequency",),
-        edit="state.json ports.mw_inputs.<con>.<fem>.<port>.band, offline with "
-             "QUAM tools"),
-    "full_scale_power_dbm": VendorOnly(
-        path="q.resonator.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
-        doc="the coarse readout power knob (grid -11..+16 in 3 dB steps, "
-            "PORT-level - shared like the LO) - it REALIZES the tracked "
-            "readout_power_dbm (binding above)",
-        edit="scqo set QUBIT.readout_power_dbm=... (solves the chain, keeps "
-             "readout_amp coupled, recorded); a direct edit silently "
-             "de-calibrates the absolute power, and any later readout_power_dbm "
-             "write re-solves and overwrites a forced value"),
-    "drive_full_scale_power_dbm": VendorOnly(
-        path="q.xy.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
-        doc="the coarse DRIVE power knob (grid -11..+16 in 3 dB steps, "
-            "PORT-level - shared by every xy operation) - it REALIZES the "
-            "tracked drive_power_dbm (binding above)",
-        edit="scqo set QUBIT.drive_power_dbm=... (solves the chain, keeps "
-             "drive_amp coupled, recorded); a direct edit silently re-scales "
-             "what every stored pi_amp AND the absolute drive power mean",
-        counterpart="drive-port output_att"),
     "x180_length": VendorOnly(
         path="q.xy.operations['x180'].length", unit="ns", kind="realizer",
         doc="pi/x180 pulse length - it REALIZES the tracked pi_duration_s "
@@ -548,6 +480,243 @@ VENDOR_ONLY: dict[str, VendorOnly] = {
             "written by it); portable traces live in run records"),
 }
 
+#: The MW-FEM's own port knobs. Present ONLY on a tree whose drive/readout
+#: channels are MWChannels: an Octave channel has no ``opx_output`` at all, so
+#: every path below is an AttributeError there, and listing them would send an
+#: operator after state.json keys their instrument does not have.
+VENDOR_ONLY_MW_FEM: dict[str, VendorOnly] = {
+    "readout_upconverter_frequency": VendorOnly(
+        path="q.resonator.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
+        doc="readout LO - the MW-FEM upconverter, PORT-level (state.json "
+            "ports.mw_outputs.<con>.<fem>.<port>) and shared by everything on "
+            "that output; many LO/IF splits give the SAME RF, so SCQO owns only "
+            "the RF (readout_freq_hz) and never moves the LO in a chain solve",
+        coupled=("downconverter_frequency", "readout_band"),
+        edit="move it so IF = RF - LO stays in range and readout_band covers "
+             "the target; downconverter_frequency MUST move with it or "
+             "demodulation breaks",
+        counterpart="modulation_frequencies lo_freq"),
+    "drive_upconverter_frequency": VendorOnly(
+        path="q.xy.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
+        doc="drive LO - PORT-level MW-FEM upconverter, shared by everything on "
+            "that output",
+        coupled=("drive_band",),
+        edit="keep IF = f_01 - LO in range and drive_band matching"),
+    "downconverter_frequency": VendorOnly(
+        path="q.resonator.opx_input.downconverter_frequency", unit="Hz", kind="vendor",
+        doc="receive-side downconversion LO on the MW input port, equal to the "
+            "readout upconverter - PORT-level. No example value quoted on "
+            "purpose: the old 'chipA: 6.06 GHz' had rotted two revisions deep "
+            "(the repo's dev state runs 5.95 GHz, the live chipA config "
+            "5.1 GHz) while the EQUALITY, which is the durable claim, held "
+            "throughout",
+        coupled=("readout_upconverter_frequency", "downconverter_band"),
+        edit="it MUST track readout_upconverter_frequency or demodulation "
+             "breaks, and downconverter_band must cover it",
+        counterpart="none - Qblox has no separate knob (NCO handles it)"),
+    "readout_band": VendorOnly(
+        path="q.resonator.opx_output.band", unit="", kind="vendor",
+        doc="which MW-FEM Nyquist band the READOUT output port runs in "
+            "(chipA: 2) - a PORT-level hardware MODE chosen so the band covers "
+            "the readout LO, not a calibration outcome. broadband_resonator_"
+            "spectroscopy reads it live to derive the LO limits it may step "
+            "within. Coverage is the INSTRUMENT's call: a band that does not "
+            "cover the frequency comes back as a QM error, so no table here "
+            "second-guesses it",
+        coupled=("readout_upconverter_frequency",),
+        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools. The MW-FEM pairs ports (2,3) (4,5) (6,7) and BOTH "
+             "ports of a pair must carry the same band (see experiments/"
+             "broadband_qubit_spectroscopy.py::_partner_port_id); "
+             "quam_config/populate_quam_lf_mw_fems.py::get_band(freq) is the "
+             "derivation the lab seeds from"),
+    "drive_band": VendorOnly(
+        path="q.xy.opx_output.band", unit="", kind="vendor",
+        doc="the same PORT-level hardware mode on the DRIVE output port "
+            "(chipA: 1), chosen so the band covers the drive LO. "
+            "broadband_qubit_spectroscopy WRITES it run-scoped - one value per "
+            "frequency segment - and restores the original in a finally. "
+            "Coverage is the INSTRUMENT's call: a band that does not cover the "
+            "frequency comes back as a QM error",
+        coupled=("drive_upconverter_frequency",),
+        edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools; BOTH ports of a MW-FEM pair (2,3) (4,5) (6,7) must "
+             "carry the same band"),
+    "downconverter_band": VendorOnly(
+        path="q.resonator.opx_input.band", unit="", kind="vendor",
+        doc="which MW-FEM band the readout INPUT port runs in (chipA: 2, "
+            "matching the output side) - PORT-level; the receive band must "
+            "cover downconverter_frequency, which the instrument enforces",
+        coupled=("downconverter_frequency",),
+        edit="state.json ports.mw_inputs.<con>.<fem>.<port>.band, offline with "
+             "QUAM tools"),
+    "full_scale_power_dbm": VendorOnly(
+        path="q.resonator.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
+        doc="the coarse readout power knob (grid -11..+16 in 3 dB steps, "
+            "PORT-level - shared like the LO) - it REALIZES the tracked "
+            "readout_power_dbm (binding above)",
+        edit="scqo set QUBIT.readout_power_dbm=... (solves the chain, keeps "
+             "readout_amp coupled, recorded); a direct edit silently "
+             "de-calibrates the absolute power, and any later readout_power_dbm "
+             "write re-solves and overwrites a forced value"),
+    "drive_full_scale_power_dbm": VendorOnly(
+        path="q.xy.opx_output.full_scale_power_dbm", unit="dBm", kind="realizer",
+        doc="the coarse DRIVE power knob (grid -11..+16 in 3 dB steps, "
+            "PORT-level - shared by every xy operation) - it REALIZES the "
+            "tracked drive_power_dbm (binding above)",
+        edit="scqo set QUBIT.drive_power_dbm=... (solves the chain, keeps "
+             "drive_amp coupled, recorded); a direct edit silently re-scales "
+             "what every stored pi_amp AND the absolute drive power mean",
+        counterpart="drive-port output_att"),
+}
+
+#: The Octave's own knobs - the analog-upconversion counterpart of the block
+#: above. Same job (put the tone at the right frequency at the right power),
+#: entirely different vendor objects: the LO and the coarse power live on an
+#: ``OctaveUpConverter`` COMPONENT rather than on a port, and the chain carries a
+#: mixer calibration the MW-FEM has no equivalent of.
+VENDOR_ONLY_OCTAVE: dict[str, VendorOnly] = {
+    "readout_octave_lo_frequency": VendorOnly(
+        path="q.resonator.frequency_converter_up.LO_frequency", unit="Hz",
+        kind="vendor",
+        doc="readout LO - the Octave up-converter's synthesizer. Grid "
+            "[2 : 0.250 : 18] GHz, and IF = RF - LO must stay within "
+            "+/-400 MHz. Like the MW-FEM upconverter it is shared by everything "
+            "on that RF output, and many LO/IF splits give the SAME RF, so SCQO "
+            "owns only the RF (readout_freq_hz) and never moves the LO in a "
+            "chain solve",
+        coupled=("octave_downconverter_lo_frequency",),
+        edit="state.json octaves.<name>.RF_outputs.<n>.LO_frequency, offline "
+             "with QUAM tools. The Octave SHARES synthesizers between RF "
+             "outputs - synth1: RF1 + RFin1, synth2: RF2 + RF3, synth3: RF4 + "
+             "RF5 - so two lines on one synth are FORCED to the same LO and "
+             "moving one moves the other. The down-converter LO must move with "
+             "it, and the mixer calibration for the new (output, LO, gain) has "
+             "to be re-run",
+        counterpart="readout_upconverter_frequency on an MW-FEM tree"),
+    "drive_octave_lo_frequency": VendorOnly(
+        path="q.xy.frequency_converter_up.LO_frequency", unit="Hz", kind="vendor",
+        doc="drive LO - the same Octave synthesizer knob on the xy line, with "
+            "the same [2 : 0.250 : 18] GHz grid and +/-400 MHz IF window",
+        edit="state.json octaves.<name>.RF_outputs.<n>.LO_frequency, offline "
+             "with QUAM tools; mind the shared synthesizers (RF2 + RF3, RF4 + "
+             "RF5) and re-run the mixer calibration afterwards",
+        counterpart="drive_upconverter_frequency on an MW-FEM tree"),
+    "octave_downconverter_lo_frequency": VendorOnly(
+        path="q.resonator.frequency_converter_down.LO_frequency", unit="Hz",
+        kind="vendor",
+        doc="receive-side LO on the Octave down-converter. It must equal the "
+            "readout up-converter's LO or demodulation breaks. UNSET IS THE "
+            "DANGEROUS CASE, and it is silent: quam's apply_to_config OMITS the "
+            "whole RF_inputs entry when this is not a number, so the generated "
+            "config simply has no receive path and reports no error",
+        coupled=("readout_octave_lo_frequency",),
+        edit="state.json octaves.<name>.RF_inputs.<n>.LO_frequency - normally a "
+             "QUAM reference to the up-converter's LO, which is what keeps the "
+             "two from drifting apart; prefer repairing that reference over "
+             "writing a second literal",
+        counterpart="downconverter_frequency on an MW-FEM tree"),
+    "readout_octave_gain": VendorOnly(
+        path="q.resonator.frequency_converter_up.gain", unit="dB", kind="realizer",
+        doc="the coarse readout power knob on an Octave (grid -20..+20 dB in "
+            "0.5 dB steps, per RF OUTPUT and shared by every channel on it) - "
+            "it REALIZES the tracked readout_power_dbm together with "
+            "readout_amp, which carries the residual in VOLTS",
+        edit="scqo set QUBIT.readout_power_dbm=... (solves the chain and HOLDS "
+             "this value wherever the amplitude can absorb the change - the "
+             "gain is part of the mixer calibration's cache key, so moving it "
+             "invalidates the stored LO-leakage correction for that RF output "
+             "and, on a multiplexed feedline, changes every other channel's "
+             "power with it)",
+        counterpart="full_scale_power_dbm on an MW-FEM tree (dBm, 3 dB grid, "
+                    "and free to move - it keys no calibration)"),
+    "drive_octave_gain": VendorOnly(
+        path="q.xy.frequency_converter_up.gain", unit="dB", kind="realizer",
+        doc="the same coarse power knob on the drive line - it REALIZES the "
+            "tracked drive_power_dbm together with drive_amp",
+        edit="scqo set QUBIT.drive_power_dbm=... (solves the chain and HOLDS "
+             "this value wherever the amplitude can absorb the change - the "
+             "gain is part of the mixer calibration's cache key, so moving it "
+             "invalidates the stored LO-leakage correction for that RF output)",
+        counterpart="drive_full_scale_power_dbm on an MW-FEM tree"),
+    "readout_octave_output_mode": VendorOnly(
+        path="q.resonator.frequency_converter_up.output_mode", unit="",
+        kind="vendor",
+        doc="the Octave RF switch on the readout output: always_on, "
+            "always_off, triggered or triggered_reversed. THE DEFAULT IS "
+            "always_off - a tree assembled without setting it emits nothing at "
+            "all, with no error anywhere, which is the first thing to check "
+            "when a brand-new Octave setup measures a flat line",
+        edit="state.json octaves.<name>.RF_outputs.<n>.output_mode; "
+             "quam_config/populate_quam_opxp_octave.py sets always_on, and "
+             "quam_builder's own transmon builder sets it when it builds the "
+             "IQ path",
+        counterpart="none - an MW-FEM has no RF switch"),
+    "drive_octave_output_mode": VendorOnly(
+        path="q.xy.frequency_converter_up.output_mode", unit="", kind="vendor",
+        doc="the same RF switch on the drive output, with the same always_off "
+            "default and the same silent consequence",
+        edit="state.json octaves.<name>.RF_outputs.<n>.output_mode",
+        counterpart="none - an MW-FEM has no RF switch"),
+    "octave_downconverter_if_mode": VendorOnly(
+        path="q.resonator.frequency_converter_down.IF_mode_I / .IF_mode_Q",
+        unit="", kind="vendor",
+        doc="how each down-converted quadrature reaches the OPX analog input: "
+            "direct, envelope, mixer or off. Both quadratures normally run "
+            "direct; anything else is a deliberate receive-path experiment",
+        edit="state.json octaves.<name>.RF_inputs.<n>.IF_mode_I / IF_mode_Q",
+        counterpart="none - the MW-FEM demodulates on the FEM itself"),
+    "octave_calibration_db_path": VendorOnly(
+        path="machine.octaves[<name>].calibration_db_path", unit="", kind="vendor",
+        doc="where the Octave's MIXER CALIBRATION lives - the LO-leakage and "
+            "image corrections, cached per (RF output, LO, gain) and per (that "
+            "LO, IF). A SEPARATE file from state.json, so a setup snapshot does "
+            "not contain it and two runs with identical QUAM state can still "
+            "have been taken with different mixer corrections",
+        edit="state.json octaves.<name>.calibration_db_path - point it at the "
+             "setup's own backend_config/ folder. UNSET IS THE TRAP: quam falls "
+             "back to os.getcwd(), so the calibration lands in whatever "
+             "directory the process happened to start in and a later run "
+             "silently finds none",
+        counterpart="none - an MW-FEM needs no mixer calibration"),
+}
+
+#: The COMPLETE inventory, whatever the tree: what :func:`vendor_only_for`
+#: filters, and what the structural self-checks run against. Kept whole on
+#: purpose - a ``coupled`` name may cross families (an Octave LO couples to its
+#: own down-converter LO), and the union is where every such name resolves.
+VENDOR_ONLY: dict[str, VendorOnly] = {
+    **VENDOR_ONLY_COMMON,
+    **VENDOR_ONLY_MW_FEM,
+    **VENDOR_ONLY_OCTAVE,
+}
+
+#: Which family block each RF chain brings in. Keyed by the strings
+#: ``scqo_qm._family.rf_chain`` returns.
+_VENDOR_ONLY_BY_CHAIN = {
+    "mw_fem": VENDOR_ONLY_MW_FEM,
+    "octave": VENDOR_ONLY_OCTAVE,
+}
+
+
+def vendor_only_for(rf_chains) -> dict[str, VendorOnly]:
+    """The inventory for a tree whose channels run on ``rf_chains``.
+
+    ``scqo state --fields`` is the only place an operator DISCOVERS these knobs,
+    so it has to describe the instrument in front of them: an MW-FEM ``band`` on
+    an Octave tree names a state.json key that hardware does not have, and the
+    Octave's gain is invisible on an MW one. A tree that mixes chains gets both
+    blocks, because it genuinely has both.
+
+    An unrecognized chain contributes nothing and is not an error - the common
+    block still describes everything that does not depend on the chain.
+    """
+    out = dict(VENDOR_ONLY_COMMON)
+    for chain in rf_chains:
+        out.update(_VENDOR_ONLY_BY_CHAIN.get(chain, {}))
+    return out
+
+
 #: The vendor OPERATOR CLIs this driver ships. They are not scqo subcommands
 #: (scqo run <name> is the single entry point, and a QM-specific verb could only
 #: be refused on Qblox), so `scqo -h` cannot list them - `scqo state --fields`
@@ -561,7 +730,8 @@ OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
         name="apply_distortion",
         command="python -m scqo_qm.backend.apply_distortion --target <target> "
                 "[--run <run_id>]",
-        doc="Write accepted cryoscope taps (distortion_amp / distortion_tau_s "
+        doc="LF-FEM flux lines only. Write accepted cryoscope taps "
+            "(distortion_amp / distortion_tau_s "
             "are FACTS - accepting them records the measurement and pushes "
             "NOTHING) into the target's z-output exponential filter. Run it "
             "after a cryoscope run's facts are accepted; it is the same command "

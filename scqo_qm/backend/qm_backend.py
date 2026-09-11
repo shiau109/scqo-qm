@@ -46,6 +46,7 @@ from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
 from scqo_qm._family import (
+    FLUX_OPX_PLUS,
     RF_EXTERNAL_MIXER,
     RF_MW_FEM,
     RF_OCTAVE,
@@ -61,6 +62,7 @@ from scqo_qm.backend.fieldmap import (
     OPERATOR_COMMANDS,
     UNREALIZED,
     VENDOR_ONLY,
+    vendor_only_for,
 )
 
 if TYPE_CHECKING:
@@ -1046,17 +1048,45 @@ class QMBackend(Backend):
         return dict(OP_KNOB_BINDINGS), dict(OP_KNOB_UNREALIZED)
 
     def vendor_only(self) -> dict[str, VendorOnly]:
-        """QM-unique calibration knobs, vendor-owned (see fieldmap)."""
-        return dict(VENDOR_ONLY)
+        """QM-unique calibration knobs, vendor-owned (see fieldmap), for THIS tree.
+
+        Filtered by the RF chains the loaded tree actually declares. ``scqo state
+        --fields`` is the only place an operator DISCOVERS these knobs, so
+        listing an MW-FEM ``band`` to someone running an Octave names a
+        state.json key their instrument does not have -- and hiding the Octave's
+        gain from them hides the knob that realizes their readout power.
+
+        Degrades to the COMPLETE inventory when there is no tree to inspect: the
+        question "what does this driver know about" still has an answer, and it
+        is a better one than an empty dict.
+        """
+        machine = getattr(self, "_machine", None)
+        if machine is None:
+            return dict(VENDOR_ONLY)
+        return vendor_only_for(tree_families(machine)["rf_chain"])
 
     def operator_commands(self) -> tuple[OperatorCommand, ...]:
         """This driver's vendor operator CLIs (see fieldmap) — the other half of
         "what can I reach on THIS instrument that is not a scqo command".
 
-        The tuple is returned as-is, unlike ``vendor_only``'s defensive
+        Scoped to what this tree can actually reach. ``apply_distortion`` writes
+        an LF-FEM ``exponential_filter``; on a tree whose flux lines are all OPX+
+        analog outputs there is no such field, so the command can only refuse --
+        and an inventory whose whole purpose is DISCOVERY must not advertise a
+        door that is walled up. A tree with no flux at all, or with any LF-FEM
+        line, keeps it.
+
+        The tuple is otherwise returned as-is, unlike ``vendor_only``'s defensive
         ``dict()``: a tuple of frozen dataclasses is already immutable, and
-        keeping the same object keeps the tests' unbound equality check exact.
+        keeping the same object keeps the tests' unbound equality check exact
+        whenever the whole tuple is served.
         """
+        machine = getattr(self, "_machine", None)
+        if machine is None:
+            return OPERATOR_COMMANDS
+        flux = set(tree_families(machine)["flux_port"])
+        if flux and flux <= {FLUX_OPX_PLUS}:
+            return tuple(c for c in OPERATOR_COMMANDS if c.name != "apply_distortion")
         return OPERATOR_COMMANDS
 
     def _drive_views(self, targets: list[str]) -> dict[str, EntityView]:
