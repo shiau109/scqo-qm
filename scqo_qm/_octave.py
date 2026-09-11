@@ -95,6 +95,21 @@ def rf_outputs_sharing_synth(rf_output: int) -> tuple[int, ...]:
     return tuple(o for o in SYNTH_OUTPUTS[synth] if o != rf_output)
 
 
+def snap_lo(lo_hz: float) -> float:
+    """The nearest LO the synthesizer can actually produce: on the grid, in range.
+
+    Anyone CHOOSING an LO must snap it, not merely check it. A broadband sweep
+    computes a continuous LO per segment and then labels that segment's frequency
+    axis with it; if the hardware quietly rounds the request to its own grid, every
+    stitched point is mislabelled by up to half a step and the spectrum is wrong in
+    a way no fit can see. Snapping first makes the requested and the emitted LO the
+    same number, which is what the axis is derived from.
+    """
+    steps = round((float(lo_hz) - LO_MIN_HZ) / LO_STEP_HZ)
+    snapped = LO_MIN_HZ + steps * LO_STEP_HZ
+    return min(LO_MAX_HZ, max(LO_MIN_HZ, snapped))
+
+
 def lo_grid_problem(lo_hz: float) -> Optional[str]:
     """Why ``lo_hz`` is not a frequency this synthesizer can produce, or None.
 

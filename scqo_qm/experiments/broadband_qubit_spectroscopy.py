@@ -14,8 +14,22 @@ probe automatically:
   3. Restores every changed attribute (band, LO, RF_frequency) in a ``finally``
      block so the machine is left in its original state even on error.
 
-For non-MW-FEM hardware (no ``opx_output.band`` attribute) the multi-band
-path is skipped and the code falls back to the original single-band behaviour.
+On an OCTAVE the band machinery does not apply -- there are no Nyquist bands
+-- but three other rules do, and they are NOT the MW-FEM's:
+  * the LO tunes on a 250 MHz GRID inside [2, 18] GHz, so every chosen LO is
+    SNAPPED to it. The axis of each stitched segment is derived from the LO, so
+    requesting one the synthesizer cannot produce would mislabel that whole
+    segment by up to half a step -- silently, and in a way no fit can see.
+  * the IF window is +/-400 MHz rather than the MW-FEM's 250 MHz convention, so
+    each LO covers more ground and fewer segments are needed.
+  * some RF outputs SHARE a synthesizer (synth2 drives RF2+RF3, synth3 drives
+    RF4+RF5) and cannot be tuned apart. Moving a target's LO physically moves its
+    synth partner's, so the partner is re-parked with it and restored with it --
+    the Octave counterpart of the MW-FEM's port-pair band constraint, and a
+    stricter one: the MW-FEM pairs ports only for their band and each keeps its
+    own upconverter_frequency.
+
+A chain this probe cannot bound is REFUSED rather than run with open LO limits.
 
 MW-FEM band definitions (lo = upconverter_frequency range):
   Band 1: LO 0.05 – 5.5  GHz, recommended for RF < 5.0 GHz
@@ -25,8 +39,19 @@ MW-FEM band definitions (lo = upconverter_frequency range):
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import xarray as xr
+
+from scqo_qm._family import RF_OCTAVE, rf_chain
+from scqo_qm._octave import (
+    IF_MAX_ABS_HZ,
+    LO_MAX_HZ,
+    LO_MIN_HZ,
+    rf_outputs_sharing_synth,
+    snap_lo,
+)
 
 from scqo import register
 from scqo.experiments import BroadbandQubitSpectroscopy
@@ -34,6 +59,12 @@ from scqo.experiments import BroadbandQubitSpectroscopy
 # ---------------------------------------------------------------------------
 # MW-FEM band table: band -> (lo_min, lo_max)
 # ---------------------------------------------------------------------------
+#: The IF ceiling this probe sweeps within on an MW-FEM (Hz). A repo
+#: convention, not a vendor bound -- nothing in qm/quam checks it. The Octave's
+#: equivalent is the hardware's own +/-400 MHz (scqo_qm._octave.IF_MAX_ABS_HZ),
+#: which is why the two are not one constant.
+_MW_FEM_MAX_IF_HZ = 250.0e6
+
 _MW_FEM_BANDS: dict[int, tuple[float, float]] = {
     1: (0.05e9, 5.5e9),
     2: (4.5e9,  7.5e9),
@@ -65,6 +96,26 @@ def _make_int_sweep(f_start: float, f_stop: float, n_pts: int) -> np.ndarray:
         return np.array([start_int], dtype=np.int64)
     step = max(1, int(round((stop_int - start_int) / (n - 1))))
     return start_int + np.arange(n, dtype=np.int64) * step
+
+
+def _restore_drive_channel(xy, *, band, mw_lo, octave_lo, rf) -> None:
+    """Put one drive channel back the way the sweep found it.
+
+    Order is load-bearing: band first, so the LO writes that follow land inside
+    a range the config validator accepts, and ``RF_frequency`` last, because it
+    is only meaningful once its LO is correct. ``None`` means "the sweep never
+    recorded one", which is not the same as "restore it to nothing".
+    """
+    if band is not None:
+        opx_out = getattr(xy, "opx_output", None)
+        if opx_out is not None and hasattr(opx_out, "band"):
+            opx_out.band = band
+    if mw_lo is not None and getattr(xy, "opx_output", None) is not None:
+        xy.opx_output.upconverter_frequency = mw_lo
+    if octave_lo is not None and getattr(xy, "frequency_converter_up", None) is not None:
+        xy.frequency_converter_up.LO_frequency = octave_lo
+    if rf is not None:
+        xy.RF_frequency = rf
 
 
 def _get_port_info(opx_out) -> tuple[str, int, int] | None:
@@ -213,18 +264,32 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
         )
         current_band: int | None = getattr(primary_opx_out, "band", None)
 
-        # Single-band fallback limits (used when no band switching is available)
-        single_lo_min, single_lo_max = 0.0, float("inf")
-        if current_band == 1:
-            single_lo_min, single_lo_max = _MW_FEM_BANDS[1]
-        elif current_band == 2:
-            single_lo_min, single_lo_max = _MW_FEM_BANDS[2]
-        elif current_band == 3:
-            single_lo_min, single_lo_max = _MW_FEM_BANDS[3]
+        # The LO limits this probe may step within. It STEPS an LO, so not
+        # knowing its range is not something to degrade around: the old
+        # [0, inf] fallback let an Octave tree walk its synthesizer below 2 GHz
+        # and label the result as though it had worked.
+        chain = rf_chain(primary_qubit.xy)
+        is_octave = chain == RF_OCTAVE
+        if is_octave:
+            single_lo_min, single_lo_max = LO_MIN_HZ, LO_MAX_HZ
+        elif current_band in _MW_FEM_BANDS:
+            single_lo_min, single_lo_max = _MW_FEM_BANDS[current_band]
+        else:
+            raise ValueError(
+                f"{primary_target}: this probe steps the drive LO, and the LO "
+                f"range of its RF chain ({chain or 'undeclared'}) is unknown - "
+                f"an MW-FEM declares it through opx_output.band (this port's is "
+                f"{current_band!r}) and an Octave through its synthesizer's "
+                f"[2, 18] GHz. Refusing rather than sweeping with open limits, "
+                f"which would produce a labelled spectrum from LOs the hardware "
+                f"never played.")
 
-        # Guard band: IF stays in [min_if, max_if] (positive; RF > LO for drive port)
+        # Guard band: IF stays in [min_if, max_if] (positive; RF > LO for drive
+        # port). The ceiling is the CHAIN's: the Octave carries +/-400 MHz of real
+        # analog IF, against the MW-FEM convention of 250 MHz.
         min_if = max(50.0e6, gap / 2.0)
-        max_if = min(250.0e6, min_if + bw)
+        max_if = min(IF_MAX_ABS_HZ if is_octave else _MW_FEM_MAX_IF_HZ,
+                     min_if + bw)
         span_per_lo = max_if - min_if
 
         # Build all (band, f_start, f_stop, lo, lo_min, lo_max) slices
@@ -261,6 +326,26 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     if _get_port_info(opx_out) in target_fem_ports:
                         port_pair_members.add(q_name)
 
+        if is_octave:
+            # The Octave's own "these move together" rule. Unlike the MW-FEM's
+            # port pairing, which only forces a shared BAND, two outputs on one
+            # synthesizer are forced to the same LO.
+            shared_outputs: set[int] = set()
+            for target_name in targets:
+                converter = getattr(
+                    getattr(machine.qubits[target_name], "xy", None),
+                    "frequency_converter_up", None)
+                rf_output = getattr(converter, "id", None)
+                if rf_output is not None:
+                    shared_outputs.update(rf_outputs_sharing_synth(int(rf_output)))
+            if shared_outputs:
+                for q_name, q_obj in machine.qubits.items():
+                    converter = getattr(getattr(q_obj, "xy", None),
+                                        "frequency_converter_up", None)
+                    rf_output = getattr(converter, "id", None)
+                    if rf_output is not None and int(rf_output) in shared_outputs:
+                        port_pair_members.add(q_name)
+
         # Track the currently-active band to avoid redundant switches
         active_band: int | None = current_band
 
@@ -271,6 +356,12 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     continue
 
                 clamped_lo = min(max(lo, lo_min), lo_max)
+                if is_octave:
+                    # Snap BEFORE the axis is derived from it. dfs below is
+                    # (rf - clamped_lo_int - nominal_if), so an LO the
+                    # synthesizer would silently round leaves every point of
+                    # this segment mislabelled by the rounding.
+                    clamped_lo = min(max(snap_lo(clamped_lo), lo_min), lo_max)
                 clamped_lo_int = int(round(clamped_lo))
 
                 n_pts = max(2, int(round(pts_per_lo * (slice_span / span_per_lo))))
@@ -291,7 +382,12 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                 # outside the configured band).  Targets' LOs are synchronized to
                 # clamped_lo in the step below; the finally block restores everything.
                 if has_band_switching and seg_band != active_band:
-                    lo_min_new, _ = _MW_FEM_BANDS.get(seg_band, (0.0, float("inf")))
+                    # Direct index, not .get with a default: _build_slices
+                    # skips any segment whose band it does not know, so an
+                    # unknown one here is a programming error. The old
+                    # (0.0, inf) default would have parked a member LO at
+                    # 0 Hz instead of saying so.
+                    lo_min_new, _ = _MW_FEM_BANDS[seg_band]
                     for member_name in port_pair_members:
                         member_q = machine.qubits[member_name]
                         member_xy = getattr(member_q, "xy", None)
@@ -328,6 +424,22 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                             target_xy.opx_output.upconverter_frequency = clamped_lo
                         if hasattr(target_xy, "frequency_converter_up") and hasattr(target_xy.frequency_converter_up, "LO_frequency"):
                             target_xy.frequency_converter_up.LO_frequency = clamped_lo
+
+                # An Octave RF output that SHARES a synthesizer with a
+                # target's cannot stay where it was: the hardware moved it when
+                # the target moved. Re-park it in the tree to match, at IF = 0,
+                # or the config would claim one synthesizer is producing two
+                # frequencies. (The MW-FEM equivalent is the band switch above;
+                # this one is stricter, because a band is per-port and a
+                # synthesizer is not.)
+                if is_octave:
+                    for member_name in port_pair_members - set(targets):
+                        member_xy = getattr(machine.qubits[member_name], "xy", None)
+                        converter = getattr(member_xy, "frequency_converter_up", None)
+                        if converter is None:
+                            continue
+                        converter.LO_frequency = clamped_lo
+                        member_xy.RF_frequency = clamped_lo
 
                 # Synchronize idle qubits to their own upconverter LO
                 for q_name, q_obj in machine.qubits.items():
@@ -383,31 +495,37 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     all_q_by_target[target].append(q_vals.ravel())
 
         finally:
-            # Restore all qubits' original band, LO, and RF_frequency
+            # Restore all qubits' original band, LO, and RF_frequency.
+            #
+            # Per qubit, and fault-tolerant per qubit: one channel that refuses a
+            # write must not strand the REST of the tree at a swept LO. That is
+            # the worst possible exit -- the session ends "cleanly" with several
+            # qubits parked at a sub-band frequency, and the next experiment
+            # measures them there without complaint. Failures are collected and
+            # reported after every restore has been attempted.
+            restore_failures: list[str] = []
             for q_name, q_obj in machine.qubits.items():
                 if not hasattr(q_obj, "xy"):
                     continue
                 target_xy = q_obj.xy
-
-                # Restore band first so subsequent LO writes land in the right range
-                if has_band_switching:
-                    orig_b = orig_bands.get(q_name)
-                    opx_out = getattr(target_xy, "opx_output", None)
-                    if orig_b is not None and opx_out is not None and hasattr(opx_out, "band"):
-                        opx_out.band = orig_b
-
-                # Restore upconverter / Octave LO
-                mw_val = orig_mw_up.get(q_name)
-                if mw_val is not None and hasattr(target_xy, "opx_output"):
-                    target_xy.opx_output.upconverter_frequency = mw_val
-                oct_val = orig_oct_up.get(q_name)
-                if oct_val is not None and hasattr(target_xy, "frequency_converter_up"):
-                    target_xy.frequency_converter_up.LO_frequency = oct_val
-
-                # Restore RF_frequency last (depends on LO being correct)
-                rf_val = orig_rf_frequencies.get(q_name)
-                if rf_val is not None and hasattr(target_xy, "RF_frequency"):
-                    target_xy.RF_frequency = rf_val
+                try:
+                    _restore_drive_channel(
+                        target_xy,
+                        band=orig_bands.get(q_name) if has_band_switching else None,
+                        mw_lo=orig_mw_up.get(q_name),
+                        octave_lo=orig_oct_up.get(q_name),
+                        rf=orig_rf_frequencies.get(q_name),
+                    )
+                except Exception as exc:
+                    restore_failures.append(f"{q_name}: {type(exc).__name__}: {exc}")
+            if restore_failures:
+                warnings.warn(
+                    "broadband_qubit_spectroscopy could not restore "
+                    + "; ".join(restore_failures)
+                    + " - those drive channels are still parked at a sub-band "
+                      "frequency and the next experiment would measure them "
+                      "there. Re-seed from the setup's state.json.",
+                    RuntimeWarning, stacklevel=2)
 
         if not all_rf_freqs:
             raise RuntimeError("no frequency sub-bands were measured")

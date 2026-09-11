@@ -6,9 +6,23 @@ Parameters, fitting, simulation are inherited from
 
 from __future__ import annotations
 
+import warnings
+
 from typing import Any
 import numpy as np
 import xarray as xr
+
+from scqo_qm._family import RF_OCTAVE, rf_chain
+from scqo_qm._octave import LO_MAX_HZ, LO_MIN_HZ, rf_outputs_sharing_synth, snap_lo
+
+#: MW-FEM LO range per Nyquist band (Hz), for the READOUT output port. The drive
+#: probe's table differs at the band-1 edges and deliberately stays its own: these
+#: are the ranges each probe was commissioned against, not a shared vendor fact.
+_MW_FEM_BANDS: dict[int, tuple[float, float]] = {
+    1: (0.5e9, 4.5e9),
+    2: (4.5e9, 7.5e9),
+    3: (7.5e9, 10.5e9),
+}
 
 from scqo import register
 from scqo.experiments import BroadbandResonatorSpectroscopy
@@ -64,17 +78,49 @@ class QMBroadbandResonatorSpectroscopy(BroadbandResonatorSpectroscopy):
             if hasattr(q_obj, "resonator") and hasattr(q_obj.resonator, "RF_frequency"):
                 orig_rf_frequencies[q_name] = q_obj.resonator.RF_frequency
 
-        # Hardware converter band limits (e.g. MW-FEM Band 2: 4.5 GHz - 7.5 GHz)
+        # The LO limits this probe may step within. It STEPS an LO, so an
+        # unknown range is not something to degrade around: the old [0, inf]
+        # fallback let an Octave tree walk its synthesizer below 2 GHz and label
+        # the result as though it had worked.
+        chain = rf_chain(rr)
+        is_octave = chain == RF_OCTAVE
         band = getattr(getattr(rr, "opx_output", None), "band", None)
-        min_lo, max_lo = 0.0, float("inf")
-        if band == 2:
-            min_lo, max_lo = 4.5e9, 7.5e9
-        elif band == 1:
-            min_lo, max_lo = 0.5e9, 4.5e9
-        elif band == 3:
-            min_lo, max_lo = 7.5e9, 10.5e9
+        if is_octave:
+            min_lo, max_lo = LO_MIN_HZ, LO_MAX_HZ
+        elif band in _MW_FEM_BANDS:
+            min_lo, max_lo = _MW_FEM_BANDS[band]
+        else:
+            raise ValueError(
+                f"{primary_target}: this probe steps the readout LO, and the LO "
+                f"range of its RF chain ({chain or 'undeclared'}) is unknown - an "
+                f"MW-FEM declares it through opx_output.band (this port's is "
+                f"{band!r}) and an Octave through its synthesizer's [2, 18] GHz. "
+                f"Refusing rather than sweeping with open limits, which would "
+                f"produce a labelled spectrum from LOs the hardware never played.")
 
-        # Guard band and slice parameters: IF strictly stays in [min_if, max_if] or [-max_if, -min_if]
+        if is_octave:
+            # Moving this LO physically moves any RF output sharing its
+            # synthesizer, and this probe tracks only the readout line - so it
+            # would restore its own LO and leave the partner's parked wherever
+            # the last segment put it. Say so rather than let it happen quietly.
+            # (A normal OPX+ readout sits on RF1, which has synth1 to itself, so
+            # this is a wiring remark, not a routine one.)
+            rf_output = getattr(getattr(rr, "frequency_converter_up", None), "id", None)
+            partners = (rf_outputs_sharing_synth(int(rf_output))
+                        if rf_output is not None else ())
+            if partners:
+                warnings.warn(
+                    f"{primary_target}: the readout is on Octave RF output "
+                    f"{rf_output}, which shares a synthesizer with RF output(s) "
+                    f"{', '.join(str(p) for p in partners)}. Stepping the readout "
+                    f"LO moves theirs too, and this probe restores only its own - "
+                    f"any line on those outputs will be left at the last "
+                    f"segment's LO. Re-seed them from state.json afterwards.",
+                    RuntimeWarning, stacklevel=2)
+
+        # Guard band and slice parameters: IF strictly stays in [min_if, max_if]
+        # or [-max_if, -min_if]. 400 MHz happens to be BOTH the Octave's hardware
+        # IF ceiling and this probe's MW-FEM convention, so one number serves.
         min_if = max(20.0e6, gap / 2.0)
         max_if = min(400.0e6, min_if + bw)
         span_per_lo = max_if - min_if
@@ -110,6 +156,12 @@ class QMBroadbandResonatorSpectroscopy(BroadbandResonatorSpectroscopy):
                     continue
 
                 clamped_lo = min(max(lo, min_lo), max_lo)
+                if is_octave:
+                    # Snap BEFORE the axis is derived from it: dfs below is
+                    # (rf - clamped_lo_int), so an LO the synthesizer would
+                    # silently round leaves every point of this segment
+                    # mislabelled by the rounding.
+                    clamped_lo = min(max(snap_lo(clamped_lo), min_lo), max_lo)
                 clamped_lo_int = int(round(clamped_lo))
 
                 n_pts = max(2, int(round(pts_per_lo * (slice_span / span_per_lo))))
@@ -170,20 +222,55 @@ class QMBroadbandResonatorSpectroscopy(BroadbandResonatorSpectroscopy):
                 all_i.append(i_vals.ravel())
                 all_q.append(q_vals.ravel())
         finally:
-            # Restore all resonators' original RF_frequency
-            for q_name, rf_val in orig_rf_frequencies.items():
-                if rf_val is not None and hasattr(machine.qubits[q_name], "resonator"):
-                    machine.qubits[q_name].resonator.RF_frequency = rf_val
+            # LO first, then RF_frequency: an RF is only meaningful once its LO is
+            # correct, and restoring in the other order briefly asks for an IF the
+            # chain cannot carry. Each step is guarded on its own, because one
+            # channel that refuses a write must not strand the REST of the tree at
+            # a swept LO - the worst possible exit, since the session would end
+            # "cleanly" with resonators parked mid-sweep and the next experiment
+            # would measure them there without complaint.
+            restore_failures: list[str] = []
 
-            # Restore original LO settings
-            if orig_mw_up is not None and hasattr(rr, "opx_output"):
-                rr.opx_output.upconverter_frequency = orig_mw_up
-            if orig_mw_down is not None and hasattr(rr, "opx_input"):
-                rr.opx_input.downconverter_frequency = orig_mw_down
-            if orig_oct_up is not None and hasattr(rr, "frequency_converter_up"):
-                rr.frequency_converter_up.LO_frequency = orig_oct_up
-            if orig_oct_down is not None and hasattr(rr, "frequency_converter_down"):
-                rr.frequency_converter_down.LO_frequency = orig_oct_down
+            def _restore(what: str, apply) -> None:
+                try:
+                    apply()
+                except Exception as exc:
+                    restore_failures.append(f"{what}: {type(exc).__name__}: {exc}")
+
+            if orig_mw_up is not None and getattr(rr, "opx_output", None) is not None:
+                _restore("readout upconverter LO",
+                         lambda: setattr(rr.opx_output, "upconverter_frequency",
+                                         orig_mw_up))
+            if orig_mw_down is not None and getattr(rr, "opx_input", None) is not None:
+                _restore("readout downconverter LO",
+                         lambda: setattr(rr.opx_input, "downconverter_frequency",
+                                         orig_mw_down))
+            if orig_oct_up is not None and getattr(rr, "frequency_converter_up", None) is not None:
+                _restore("Octave up-converter LO",
+                         lambda: setattr(rr.frequency_converter_up, "LO_frequency",
+                                         orig_oct_up))
+            if orig_oct_down is not None and getattr(rr, "frequency_converter_down", None) is not None:
+                _restore("Octave down-converter LO",
+                         lambda: setattr(rr.frequency_converter_down, "LO_frequency",
+                                         orig_oct_down))
+
+            for q_name, rf_val in orig_rf_frequencies.items():
+                if rf_val is None:
+                    continue
+                resonator = getattr(machine.qubits[q_name], "resonator", None)
+                if resonator is None:
+                    continue
+                _restore(f"{q_name} readout RF",
+                         lambda r=resonator, v=rf_val: setattr(r, "RF_frequency", v))
+
+            if restore_failures:
+                warnings.warn(
+                    "broadband_resonator_spectroscopy could not restore "
+                    + "; ".join(restore_failures)
+                    + " - those readout channels are still parked at a sub-band "
+                      "frequency and the next experiment would measure them "
+                      "there. Re-seed from the setup's state.json.",
+                    RuntimeWarning, stacklevel=2)
 
         if not all_rf_freqs:
             raise RuntimeError("no frequency sub-bands were measured")
