@@ -30,6 +30,7 @@ SELF_ACQUIRING = {
     "pair_swap_chevron",
     "qc_n_stark_amp",
     "qc_n_swap_amp",
+    "qc_swap_flux_stark",
     "qubit_drag_equator",
     "qubit_drag_alternating",
     "qubit_ramsey_cryoscope",
