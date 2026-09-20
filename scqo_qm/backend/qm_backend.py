@@ -1033,11 +1033,19 @@ def _progress_shot_total(experiment: "Experiment") -> int:
     return int(total)
 
 
+#: How long ``qm_session`` waits for the cluster's locks to free before it gives up (s).
+#: While a neighbour's job -- or a dead session -- still holds them, every open fails with
+#: "Resources already locked" and qualang_tools polls until this budget runs out. 5 minutes
+#: outlasts a typical neighbouring run; past that the holder is usually dead and wants
+#: `python -m scqo_qm.backend.close_qm`, not more waiting.
+_QM_SESSION_TIMEOUT_S = 300
+
+
 class QMBackend(Backend):
     """scqo Backend over a Quantum Machines OPX (via QUAM + the fused experiment builders)."""
 
     def __init__(self, machine: Any, *, roster: "Roster",
-                 timeout: float = 120) -> None:
+                 timeout: float = _QM_SESSION_TIMEOUT_S) -> None:
         self._machine = machine
         self._roster = roster
         self._device = QMDeviceModel(machine, roster)
@@ -1045,7 +1053,7 @@ class QMBackend(Backend):
 
     @classmethod
     def load(cls, *, roster: "Roster", state_path: str | None = None,
-             timeout: float = 120) -> "QMBackend":
+             timeout: float = _QM_SESSION_TIMEOUT_S) -> "QMBackend":
         """Construct from a QUAM state. ``state_path`` overrides ``QUAM_STATE_PATH``;
         when omitted the env / default configuration is used."""
         import os
