@@ -7,8 +7,12 @@ REM          double-click   -> same as "start"
 REM ===========================================================================
 
 REM --- Environment: uv venv .venv-qm (see SCQO/INSTALL.md section 1); ----------
+REM     Resolved RELATIVE to this repo on purpose. INSTALL.md's one hard
+REM     requirement is the SHAPE -- the repos sit as siblings under one parent --
+REM     so the shared venv is always <parent>\.venv-qm, whatever that parent is
+REM     called on a given machine (D:\github on the lab PC, elsewhere on others).
 REM     conda LCHQM_test is the legacy fallback until the venv is battle-tested.
-set "VENV_ACTIVATE=D:\github\.venv-qm\Scripts\activate.bat"
+set "VENV_ACTIVATE=%~dp0..\.venv-qm\Scripts\activate.bat"
 set "ENV_NAME=LCHQM_test"
 REM ----------------------------------------------------------------------------
 
