@@ -323,6 +323,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |
 | `test_sequential_probe.py` | the BACKEND-PARITY half: qubit_spectroscopy's drive/readout timing in both `readout_overlap` modes, asserted on generated QUA (quote-agnostic vs qm versions) | yes |
+| `test_resonator_stark_probe.py` | the BACKEND-PARITY half for qubit_resonator_stark: the Stark tone (the readout op, `amp()`-scaled) rings up before the drive and ends with it, the unscaled measure waits one depletion; the QUAM 16 ns factory-depletion refusal; one target at a time — on generated QUA | yes |
 | `test_scqo_glue.py` | the `scqo` CLI works in THIS venv + the qm factory (slowest) | yes |
 | `test_check_real_config.py` | `scripts/check_real_config.py` end-to-end to its PASS line on the live quam_state (subprocess, ~14 s — exit code + final line asserted, never a pipeline fragment) | yes |
 
