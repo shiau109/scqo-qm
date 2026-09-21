@@ -8,7 +8,7 @@ Two halves, deliberately:
   carry both families of refusal at once, and that is what these pin;
 * the BUILD is rendered from the live ``quam_state``, because a QUA program is
   made out of the vendor's own macros and there is no honest stand-in for
-  ``pair.macros["iswap"].apply(ctrl_amp=...)``. The committed state carries no
+  ``pair.macros["iswap"].apply(ctrl_scale=...)``. The committed state carries no
   ``stark`` xy op (it is an operator action via quam_config/register_stark.py),
   so the fixture registers one IN MEMORY and removes it again -- ``Quam.load``
   returns a shared tree.

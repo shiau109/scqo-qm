@@ -5,15 +5,17 @@ sweeps it, and both chain shells (``qc_unidirectional_trotter``,
 ``qc_trotter_compensation``) set it per pair through ``swap_coupler_flux`` -- so
 the refusals live here once rather than three times.
 
-WHY A ZERO STORED AMPLITUDE IS THE INTERESTING CASE. ``ISwapImplementation.apply``
-turns a ``cplr_amp`` in volts into a QUA ``amplitude_scale`` by dividing by the
-coupler pulse's own stored amplitude. A pair whose coupler pulse is baked at
-0.0 V therefore cannot have its coupler driven at all -- and that is not a rare
+WHY A ZERO STORED AMPLITUDE IS THE INTERESTING CASE. Every coupler setting in
+volts becomes an ``amplitude_scale`` by dividing by the coupler pulse's own stored
+amplitude -- in ``ISwapImplementation.apply`` for the chain shells' fixed
+``cplr_amp``, in ``pair_swap_angle`` itself for its swept one, and always in
+Python, never in QUA (the macro refuses a QUA variable as ``cplr_amp``; see
+``resolve_amplitude_scale``). A pair whose coupler pulse is baked at 0.0 V
+therefore cannot have its coupler driven at all -- and that is not a rare
 misconfiguration, it is exactly the state of a chip whose swaps have only ever
 been driven by detuning the control qubit into resonance, with the coupler parked
 and never brought up. Caught here, it names ``register_flattop_cosine.py``;
-uncaught, it is a division by zero (or an infinite amplitude_scale) surfacing as
-a QUA build error about an internal variable.
+uncaught, it is a division by zero surfacing far from its cause.
 
 The split from ``_flux_limits`` is the same one that module already states: this
 answers "is there a coupler knob to turn, and is it turnable?", while
@@ -107,9 +109,9 @@ def resolve_coupler_knob(swap_pair, swap_operation: str, *, why: str = ""):
     if stored == 0.0:
         raise ValueError(
             f"{swap_pair.name}: the coupler pulse {flux_pulse_name!r} is baked at "
-            f"amplitude 0.0, so the swap angle CANNOT be driven on this pair -- the "
-            f"macro converts cplr_amp to an amplitude_scale by dividing by that "
-            f"stored value. A zero here means the swap has only ever been driven by "
+            f"amplitude 0.0, so the swap angle CANNOT be driven on this pair -- a "
+            f"coupler amplitude in volts becomes an amplitude_scale by dividing by "
+            f"that stored value. A zero here means the swap has only ever been driven by "
             f"detuning the control qubit and the coupler was never brought up. Fix: "
             f"re-run quam_config/register_flattop_cosine.py with a NONZERO coupler "
             f"amplitude for this pair (TUTORIAL section 12 step 2), then re-run.")
@@ -126,9 +128,10 @@ def guard_coupler_amplitudes(swap_pair, swap_operation: str,
     pulse is the amplitude_scale REFERENCE -- not a ``const``, so the rail/2
     convention deliberately does not apply to it -- and the volts are an
     excursion on top of whatever standing bias ``initialize_qpu`` applied, so the
-    RELATIVE frame is the right one. The returned reference is unused by callers:
-    the macro does its own ``cplr_amp/ref`` rescaling internally, and this call is
-    for its refusals.
+    RELATIVE frame is the right one. Returns ``(coupler, flux_pulse_name)``: a
+    caller that SWEEPS the coupler (``pair_swap_angle``) reads the stored amplitude
+    off them and divides by it in Python; the chain shells pass their fixed volts
+    to the macro, which does the same division itself.
     """
     coupler, flux_pulse_name = resolve_coupler_knob(
         swap_pair, swap_operation, why=why)

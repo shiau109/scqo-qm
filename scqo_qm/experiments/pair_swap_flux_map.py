@@ -22,7 +22,11 @@ Amplitude sweep (`amp_mode`, applied to BOTH channels):
   - "absolute": the sweep values are pulse amplitudes in volts. Each channel plays
     `amplitude_scale = a / ref` where `ref` is that channel op's stored amplitude, so the
     emitted pulse equals the swept value. The resulting scale must stay inside QUA's
-    (-2, 2) dynamic-amplitude range or a ValueError is raised before building.
+    (-2, 2) dynamic-amplitude range or a ValueError is raised before building. The
+    division is assigned to a per-pair variable AHEAD of the reset, so the two flux
+    plays carry plain variables: computed in front of each play instead, it would hold
+    back that element alone, and the qubit and coupler pulses of one swap could start
+    on different clock edges.
   - "prefactor": the sweep values are used directly as the unitless `amplitude_scale`.
 
 With state discrimination both qubits are read out 2-level and the saved data is the
@@ -107,10 +111,10 @@ def build_program(
     Debug isolation: with `swap_via_macro=True` the swap is played through the QUAM
     `qp.macros[swap_operation]` `.apply()` path (exactly what `qc_swap_reset`/`qc_N_swap`
     call) instead of the direct flux play -- to test whether the macro itself reproduces
-    the 2D-map swap. In this mode the qubit-z amplitude follows the y-sweep (the macro's
-    `ctrl_amp=q_a`, absolute volts) while the coupler plays bare at its baked amplitude
-    (0 for q1_q2, i.e. coupler flux = 0), so the coupler (x) sweep and `flux_time` are
-    ignored and `amp_mode` must be "absolute".
+    the 2D-map swap. In this mode the qubit-z amplitude follows the y-sweep (absolute
+    volts, handed to the macro as `ctrl_scale` once divided by its z pulse's stored
+    amplitude) while the coupler plays bare at its baked amplitude, so the coupler (x)
+    sweep and `flux_time` are ignored and `amp_mode` must be "absolute".
     """
     num_qubit_pairs = len(qubit_pairs)
 
@@ -187,9 +191,10 @@ def build_program(
                 )
 
     # Optional debug: play the swap through the QUAM macro instead of the direct flux play.
+    macro_refs = {}
     if swap_via_macro:
         if amp_mode != "absolute":
-            raise ValueError("swap_via_macro requires amp_mode='absolute' (the macro's ctrl_amp is absolute volts).")
+            raise ValueError("swap_via_macro requires amp_mode='absolute' (the swept values are absolute volts).")
         for qp in qubit_pairs:
             if swap_operation not in qp.macros:
                 raise ValueError(f"Pair {qp.name} has no macro {swap_operation!r}; available: {list(qp.macros)}.")
@@ -203,9 +208,10 @@ def build_program(
             # Same shared guard as qc_N_swap_amp, which sweeps this exact knob: the
             # macro's z pulse is the amplitude_scale reference (not a `const`, so the
             # rail/2 convention does not apply), and the swept volts ride on the
-            # declared standing bias.
+            # declared standing bias. The reference it returns is what the volts are
+            # divided by -- ahead of the swap, see the hoisted assigns below.
             z = qp.qubit_control.z
-            check_flux_pulse_relative(
+            macro_refs[qp.name] = check_flux_pulse_relative(
                 z,
                 name=f"{qp.name} macro {swap_operation!r} on {qp.qubit_control.name}.z",
                 idle_v=declared_idle_offset_v(z),
@@ -236,6 +242,12 @@ def build_program(
     with program() as prog:
         c_a = declare(fixed)  # swept coupler amplitude (volts if absolute, else amplitude_scale)
         q_a = declare(fixed)  # swept qubit-z amplitude (volts if absolute, else amplitude_scale)
+        if amp_mode == "absolute":
+            # Per-pair amplitude_scales, assigned AHEAD of the swap (see the loop
+            # body). One per pair because multiplexed pairs share the volts loop
+            # variable but not their stored reference amplitudes.
+            q_scl = [declare(fixed) for _ in range(num_qubit_pairs)]
+            c_scl = [declare(fixed) for _ in range(num_qubit_pairs)]
         I_c, I_c_st, Q_c, Q_c_st, n, n_st = machine.declare_qua_variables()
         I_t, I_t_st, Q_t, Q_t_st, _, _ = machine.declare_qua_variables()
         if use_state_discrimination:
@@ -267,6 +279,17 @@ def build_program(
                     # Coupler-flux amplitude loop (inner -> x axis)
                     with for_(*from_array(c_a, coupler_amplitudes)):
                         for ii, qp in multiplexed_qubit_pairs.items():
+                            if amp_mode == "absolute":
+                                # volts -> amplitude_scale, divided HERE, before the
+                                # reset, and never between the prep's align() and the
+                                # two flux plays: there each division would hold back
+                                # its own element's play, and the z and coupler pulses
+                                # of one swap could start on different clock edges.
+                                if swap_via_macro:
+                                    assign(q_scl[ii], q_a / macro_refs[qp.name])
+                                else:
+                                    assign(q_scl[ii], q_a / qubit_refs[qp.name])
+                                    assign(c_scl[ii], c_a / coupler_refs[qp.name])
                             # Qubit initialization
                             qp.qubit_control.reset(reset_type, simulate)
                             qp.qubit_target.reset(reset_type, simulate)
@@ -283,14 +306,15 @@ def build_program(
                             if swap_via_macro:
                                 # Debug: exercise the QUAM swap macro's .apply() path (as
                                 # qc_swap_reset does) instead of the direct flux play. The qubit-z
-                                # amplitude follows the y-sweep (ctrl_amp=q_a, absolute volts); the
-                                # coupler is played bare at the macro pulse's baked amplitude (0 for
-                                # q1_q2 -> coupler flux = 0), so the coupler (x) sweep and flux_time
+                                # amplitude follows the y-sweep (absolute volts, already divided
+                                # into a scale above); the coupler is played bare at the macro
+                                # pulse's baked amplitude, so the coupler (x) sweep and flux_time
                                 # are ignored in this mode.
-                                qp.macros[swap_operation].apply(ctrl_amp=q_a, cplr_amp=None)
+                                qp.macros[swap_operation].apply(ctrl_scale=q_scl[ii])
                             else:
-                                c_scale = c_a / coupler_refs[qp.name] if amp_mode == "absolute" else c_a
-                                q_scale = q_a / qubit_refs[qp.name] if amp_mode == "absolute" else q_a
+                                # plain variables: every division was done ahead of the reset
+                                c_scale = c_scl[ii] if amp_mode == "absolute" else c_a
+                                q_scale = q_scl[ii] if amp_mode == "absolute" else q_a
                                 if duration_cycles is None:
                                     fq.z.play(qubit_operation, amplitude_scale=q_scale)
                                     qp.coupler.play(coupler_operation, amplitude_scale=c_scale)

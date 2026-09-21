@@ -3,20 +3,30 @@ probe: vendor code only (qm/quam/qualang_tools) - no qualibrate, no scqo, no scq
 
 The two-amplitude cross of the qc_n_swap_amp and qc_n_stark_amp probes. The swap
 count is a FIXED Python int (no count axis at all); what is swept is a 2D grid of
-the swap macro's control-qubit flux amplitude (outer axis, absolute volts, passed
-as the macro's `ctrl_amp`) against the amplitude factor of a separate off-resonant
-RF (XY) tone -- the named `stark_operation` on the control qubit's xy line, played
-after every swap (inner axis). The tone is made off-resonant by `update_frequency`
-(a `SquarePulse` carries no per-pulse detuning), so it AC-Stark-shifts the qubit
-rather than rotating it; the frequency is restored before readout.
+the swap macro's control-qubit flux amplitude (outer axis, absolute volts) against
+the amplitude factor of a separate off-resonant RF (XY) tone -- the named
+`stark_operation` on the control qubit's xy line, played after every swap (inner
+axis). The tone is made off-resonant by `update_frequency` (a `SquarePulse` carries
+no per-pulse detuning), so it AC-Stark-shifts the qubit rather than rotating it;
+the frequency is restored before readout.
+
+THE FLUX AMPLITUDE IS SWEPT AS A SCALE. The volts are divided by the macro pulse's
+stored amplitude HERE, in Python, and the QUA loop iterates the resulting
+amplitude_scale, handed to the macro as `ctrl_scale`. Passing the volts as
+`ctrl_amp` instead made the macro divide on the FPGA inside every round, between
+the round's align() and its play -- and while it did, this map's per-round phase
+came out about 0.40 turn away from `qc_n_stark_amp`'s bare gate at the same flux
+on 5Q4C q1_q2 (2026-09-21), the size of two clock cycles of round time at that
+pair's 301 MHz detuning. With the scale precomputed, every round plays what the
+bare gate plays, with no arithmetic in front of it.
 
 Circuit per shot (for a swept flux amplitude a_f and stark factor a_s):
   1. Initialize every involved qubit with `q.reset(reset_type, simulate)`
      (involved = measured qubits + the swap pair's control/target).
   2. State prep: `swap_pair.qubit_control.xy.play("x180")` (at the RESONANT IF).
   3. Detune the control xy by `stark_detuning_hz` (`update_frequency`).
-  4. Repeat `swap_count` times: `macros[swap_operation].apply(ctrl_amp=a_f)`, idle
-     the pair's flux lines for `operation_gap_ns` (if nonzero), then
+  4. Repeat `swap_count` times: `macros[swap_operation].apply(ctrl_scale=a_f/ref)`,
+     idle the pair's flux lines for `operation_gap_ns` (if nonzero), then
      `qubit_control.xy.play(stark_operation, amplitude_scale=a_s)`.
   5. Restore the control xy IF, then read out every measured qubit.
 
@@ -40,9 +50,9 @@ joint multi-qubit populations; without it the shot-averaged raw I/Q is saved
 instead. There is no fit and no state writeback.
 
 The chosen macro must expose a string `flux_pulse` playable on the control qubit's
-z line and accept `apply(ctrl_amp=...)` (e.g. the lab `ISwapImplementation`); its
+z line and accept `apply(ctrl_scale=...)` (e.g. the lab `ISwapImplementation`); its
 stored z-pulse amplitude is the rescaling reference and must be nonzero. The
-coupler plays bare at its baked amplitude (`cplr_amp=None`).
+coupler plays bare at its baked amplitude.
 
 QM fixed-N flux x AC-Stark amplitude map for scqo -- supplies ``probe()``.
 
@@ -113,8 +123,9 @@ def build_program(
     `measure_qubits` is a plain list of qubit objects read out at the end of the circuit;
     `swap_pair` is a qubit-pair object whose `macros[swap_operation]` is applied each swap.
     `swap_count` is the FIXED number of swaps (not an axis). `qubit_amplitudes` is the
-    control-qubit flux amplitude sweep in absolute volts (outer axis), passed to each swap
-    as the macro's `ctrl_amp`; `stark_amps` is the swept stark amplitude FACTOR
+    control-qubit flux amplitude sweep in absolute volts (outer axis), converted here to
+    the macro's `ctrl_scale` (volts / the pulse's stored amplitude, in Python, so no
+    division runs inside a round); `stark_amps` is the swept stark amplitude FACTOR
     (dimensionless amplitude_scale, inner axis) applied to the control qubit's
     `stark_operation` xy tone. `stark_detuning_hz` is the FIXED off-resonant detuning of
     that tone. All measured qubits are read out within the same shot (joint / multiplexed
@@ -139,7 +150,7 @@ def build_program(
     involved = _dedup_involved(measure_qubits, swap_pair)
     ctrl = swap_pair.qubit_control
 
-    # Validate the macro's swept-ctrl_amp path (the pair_qcq_fixed_time swap_via_macro
+    # Validate the macro's swept control-amplitude path (the pair_qcq_fixed_time swap_via_macro
     # contract): the macro must exist, its z flux pulse must be playable and its stored
     # amplitude is the rescaling reference for the absolute-volt sweep.
     if swap_operation not in swap_pair.macros:
@@ -148,23 +159,23 @@ def build_program(
     ops = ctrl.z.operations
     if not isinstance(flux_pulse_name, str) or flux_pulse_name not in ops:
         raise ValueError(
-            f"Macro {swap_operation!r} on {swap_pair.name} has no z flux_pulse playable with ctrl_amp "
+            f"Macro {swap_operation!r} on {swap_pair.name} has no z flux_pulse playable at a swept amplitude "
             f"(flux_pulse={flux_pulse_name!r})."
         )
     # Rail + amplitude_scale + idle-sum guard, shared with every other flux probe.
     # The macro's z pulse is the amplitude_scale REFERENCE (not a `const`, so the
     # rail/2 convention deliberately does not apply to it), and the swept volts are
-    # an excursion on top of whatever standing bias initialize_qpu applied.
-    # (the returned reference is unused here — the MACRO does its own ctrl_amp/ref
-    # rescaling internally; this call is for its refusals)
+    # an excursion on top of whatever standing bias initialize_qpu applied. The
+    # reference it returns is what the volts are divided by, here and not in QUA.
     z = ctrl.z
-    check_flux_pulse_relative(
+    ctrl_ref = check_flux_pulse_relative(
         z,
         name=f"{swap_pair.name} macro {swap_operation!r} on {ctrl.name}.z",
         idle_v=declared_idle_offset_v(z),
         amps_v=qubit_amplitudes,
         operation=flux_pulse_name,
     )
+    ctrl_scales = qubit_amplitudes / ctrl_ref
     # Validate the swept AC-Stark tone: the operation must exist on the control's xy line,
     # and the amplitude-factor window must be expressible by QUA's dynamic amplitude_scale.
     # BOTH guards are needed here — qc_n_swap_amp sweeps only the flux and qc_n_stark_amp
@@ -205,7 +216,7 @@ def build_program(
     with program() as prog:
         # Macro to declare I, Q, n and their respective streams for the measured qubits.
         I, I_st, Q, Q_st, n, n_st = machine.declare_qua_variables()
-        q_f = declare(fixed)  # swept ctrl flux amplitude (absolute volts)
+        q_f = declare(fixed)  # swept ctrl flux amplitude, as the macro's amplitude_scale
         q_s = declare(fixed)  # swept stark amplitude factor (amplitude_scale)
         rr = declare(int)  # swap counter
         if use_state_discrimination:
@@ -219,8 +230,10 @@ def build_program(
 
         with for_(n, 0, n < num_shots, n + 1):
             save(n, n_st)
-            # Qubit-flux amplitude loop (outer -> y axis)
-            with for_(*from_array(q_f, qubit_amplitudes)):
+            # Qubit-flux amplitude loop (outer -> y axis). It iterates the SCALES
+            # (volts / reference, computed above), in the same order as the volts
+            # axis the data is labelled with.
+            with for_(*from_array(q_f, ctrl_scales)):
                 # Stark-amplitude loop (inner -> x axis)
                 with for_(*from_array(q_s, stark_amps)):
                     # Initialization: thermalize / actively reset every involved qubit.
@@ -239,9 +252,10 @@ def build_program(
                     ctrl.xy.update_frequency(stark_if)
 
                     # Circuit body: swap_count swaps on the pair, each at the swept ctrl
-                    # amplitude (the coupler plays bare at its baked amplitude,
-                    # cplr_amp=None), each followed SEQUENTIALLY by the swept off-resonant
-                    # stark tone on the control xy. The swap and the stark do NOT overlap:
+                    # amplitude (the coupler plays bare at its baked amplitude), each
+                    # followed SEQUENTIALLY by the swept off-resonant stark tone on the
+                    # control xy. The amplitude reaches the macro as a ready scale, so
+                    # nothing is computed between the round's align() and its play. The swap and the stark do NOT overlap:
                     # apply() ends with the pair's align() (FluxTunableTransmonPair.align
                     # aligns every channel of both qubits, INCLUDING control.xy), so the
                     # control's xy timeline is synced to the end of the swap before the
@@ -250,7 +264,7 @@ def build_program(
                     # The bound is a Python int, so this is a fixed-length loop, not a
                     # swept axis.
                     with for_(rr, 0, rr < swap_count, rr + 1):
-                        swap_pair.macros[swap_operation].apply(ctrl_amp=q_f)
+                        swap_pair.macros[swap_operation].apply(ctrl_scale=q_f)
                         if gap_cycles > 0:
                             swap_pair.wait(gap_cycles)
                         ctrl.xy.play(stark_operation, amplitude_scale=q_s)

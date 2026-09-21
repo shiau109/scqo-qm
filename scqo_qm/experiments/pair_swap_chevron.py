@@ -400,6 +400,11 @@ def build_program(
         a = declare(fixed)
         t_left_ns = declare(int)
         t_cycles = declare(int)
+        # Each pair's stretched-branch amplitude_scale, (base_level / denom) * a,
+        # assigned AHEAD of the reset rather than computed in front of the z play:
+        # there it would hold back the z pulse alone, and on the coupled path the
+        # coupler pulse beside it (a compile-time constant) would not wait.
+        z_scl = [declare(fixed) for _ in range(num_qubit_pairs)]
         I_c, I_c_st, Q_c, Q_c_st, n, n_st = machine.declare_qua_variables()
         I_t, I_t_st, Q_t, Q_t_st, _, _ = machine.declare_qua_variables()
         if use_state_discrimination:
@@ -437,6 +442,9 @@ def build_program(
                     with for_(*from_array(t, times_cycles)):
                         for ii, qp in multiplexed_qubit_pairs.items():
                             fq = _flux_qubit(qp, flux_role)
+                            # the stretched play's scale, computed before the reset
+                            # (see the declaration above)
+                            assign(z_scl[ii], (base_levels[qp.name] / denoms[qp.name]) * a)
                             # Qubit initialization
                             qp.qubit_control.reset(reset_type, simulate)
                             qp.qubit_target.reset(reset_type, simulate)
@@ -471,26 +479,20 @@ def build_program(
                                         # Play only the pulse multiple of 4
                                         with case_(0):
                                             align()
-                                            p = base_levels[qp.name]
-                                            denom = denoms[qp.name]
-                                            scale = (p / denom) * a
                                             fq.z.play(
                                                 "const",
                                                 duration=t_cycles,
-                                                amplitude_scale=scale,
+                                                amplitude_scale=z_scl[ii],
                                             )
                                         # Play the pulse multiple of 4 followed by the baked pulse of the missing duration
                                         for j in range(1, 4):
                                             with case_(j):
                                                 align()
-                                                p = base_levels[qp.name]
-                                                denom = denoms[qp.name]
-                                                scale = (p / denom) * a
                                                 with strict_timing_():
                                                     fq.z.play(
                                                         "const",
                                                         duration=t_cycles,
-                                                        amplitude_scale=scale,
+                                                        amplitude_scale=z_scl[ii],
                                                     )
                                                     baked_signals[fq.name][j - 1].run(
                                                         amp_array=[(fq.z.name, a)]
@@ -506,14 +508,11 @@ def build_program(
                                 # shape pair_swap_flux_map uses.
                                 align()
                                 assign(t_cycles, t >> 2)
-                                p = base_levels[qp.name]
-                                denom = denoms[qp.name]
-                                scale = (p / denom) * a
                                 coupler, coupler_pulse, c_scale = coupler_plays[qp.name]
                                 fq.z.play(
                                     "const",
                                     duration=t_cycles,
-                                    amplitude_scale=scale,
+                                    amplitude_scale=z_scl[ii],
                                 )
                                 coupler.play(
                                     coupler_pulse,

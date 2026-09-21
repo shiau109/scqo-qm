@@ -2,18 +2,18 @@
 - no qualibrate, no scqo, no scqat in the builder half.
 
 The angle-knob sibling of ``qc_n_swap_amp``. That probe sweeps the swap macro's
-``ctrl_amp`` - the CONTROL QUBIT's flux amplitude, which is the RESONANCE knob -
-with the coupler playing bare. This one does the mirror: it sweeps ``cplr_amp``,
-the COUPLER's flux amplitude, with the control playing bare at its calibrated
-baked amplitude. ``J_eff(Phi_c)`` is what the coupler tunes, so at a fixed pulse
-duration that sweep IS the angle sweep (TUTORIAL section 12).
+CONTROL QUBIT flux amplitude - the RESONANCE knob - with the coupler playing bare.
+This one does the mirror: it sweeps the COUPLER's flux amplitude, with the control
+playing bare at its calibrated baked amplitude. ``J_eff(Phi_c)`` is what the
+coupler tunes, so at a fixed pulse duration that sweep IS the angle sweep
+(TUTORIAL section 12).
 
 Circuit per shot (for a swept coupler amplitude c and swap count N):
   1. Initialize every involved qubit with ``q.reset(reset_type, simulate)``
      (involved = measured qubits + the swap pair's control/target).
   2. State prep: ``swap_pair.qubit_control.xy.play("x180")``.
-  3. Repeat N times: ``swap_pair.macros[swap_operation].apply(cplr_amp=c)``, then
-     idle the pair's flux lines for ``operation_gap_ns`` (if nonzero).
+  3. Repeat N times: ``swap_pair.macros[swap_operation].apply(cplr_scale=c/ref)``,
+     then idle the pair's flux lines for ``operation_gap_ns`` (if nonzero).
   4. Read out every measured qubit (always state-discriminated - this experiment
      has no I/Q form).
 
@@ -21,17 +21,23 @@ Reading the transfer against N at each coupler amplitude gives an oscillation of
 period ``pi/theta``, so the map answers "what angle does this coupler setting
 give?" rather than "where is resonance?".
 
-THE ZERO-AMPLITUDE TRAP, and why it is refused BY NAME here. The macro converts
-``cplr_amp`` to a QUA ``amplitude_scale`` by dividing by its stored coupler pulse
-amplitude (``ISwapImplementation.apply``). A pair whose coupler pulse is baked at
+THE COUPLER AMPLITUDE IS SWEPT AS A SCALE. The volts are divided by the stored
+coupler pulse amplitude HERE, in Python, and the QUA loop iterates the resulting
+amplitude_scale, handed to the macro as ``cplr_scale``. Dividing in QUA instead
+(``apply(cplr_amp=<QUA variable>)``) would run the arithmetic inside every round,
+in front of the COUPLER's play and not the control's -- so the two pulses of one
+swap could start on different clock edges, and the angle measured would belong to
+a gate the chain never plays. The macro refuses that form.
+
+THE ZERO-AMPLITUDE TRAP, and why it is refused BY NAME here. That division is by
+the stored coupler pulse amplitude, so a pair whose coupler pulse is baked at
 0.0 V - which is the state a chip is in whenever the swap has only ever been
-driven by detuning the control qubit - makes that a division by zero, and the
-failure would surface as a QUA build error naming an internal variable rather
-than the un-registered pulse. So the amplitude is checked before any QUA is
-built, and the message names ``register_flattop_cosine.py``.
+driven by detuning the control qubit - makes it a division by zero. So the
+amplitude is checked before anything is divided, and the message names
+``register_flattop_cosine.py``.
 
 The chosen macro must expose a string ``flux_pulse`` playable on the COUPLER and
-accept ``apply(cplr_amp=...)`` (the lab ``ISwapImplementation`` does both).
+accept ``apply(cplr_scale=...)`` (the lab ``ISwapImplementation`` does both).
 
 QM partial-swap angle calibration for scqo -- supplies ``probe()``.
 
@@ -100,9 +106,10 @@ def build_program(
     ``macros[swap_operation]`` is applied each swap. ``rounds_array`` is the
     integer sweep over the number of swaps (N=0 allowed, giving just the x180
     prep, inner axis); ``coupler_amplitudes`` is the COUPLER flux amplitude sweep
-    in absolute volts (outer axis), passed to each swap as the macro's
-    ``cplr_amp`` while ``ctrl_amp`` is left None so the control qubit's own flux
-    pulse plays at its calibrated baked amplitude.
+    in absolute volts (outer axis), converted here to the macro's ``cplr_scale``
+    (volts / the coupler pulse's stored amplitude, in Python, so no division runs
+    inside a round) while the control qubit's own flux pulse plays at its
+    calibrated baked amplitude.
 
     ``operation_gap_ns`` (multiple of 4, default 0) idles the pair's flux lines
     after each swap, so the flux pulse can settle before the next swap fires.
@@ -122,10 +129,13 @@ def build_program(
     # The angle knob has to EXIST and be turnable (a coupler pulse baked at zero
     # is neither), and the port has to be able to emit the swept volts. Both
     # refuse before a single QUA statement -- see _coupler_knob.
-    guard_coupler_amplitudes(
+    coupler, coupler_pulse = guard_coupler_amplitudes(
         swap_pair, swap_operation, coupler_amplitudes,
         why="pair_swap_angle sweeps the coupler flux; qc_n_swap_amp sweeps the "
             "control qubit's flux and needs no coupler.")
+    # The guard has just proven the stored amplitude nonzero, so this divides
+    # safely -- and it divides HERE, not in QUA (module docstring).
+    coupler_scales = coupler_amplitudes / float(coupler.operations[coupler_pulse].amplitude)
 
     # The phase-compensation tones. They are what turn the fitted per-round
     # COMPOSITE angle back into the exchange angle (module docstring), so a
@@ -165,7 +175,7 @@ def build_program(
         # qubits (n / n_st drive the shot loop and progress counter; I/Q go
         # unused - this experiment is discriminated by construction).
         I, I_st, Q, Q_st, n, n_st = machine.declare_qua_variables()
-        c_a = declare(fixed)  # swept coupler flux amplitude (absolute volts)
+        c_a = declare(fixed)  # swept coupler flux amplitude, as the macro's amplitude_scale
         r = declare(int)      # swept swap count (current value)
         rr = declare(int)     # inner swap counter
         state = [declare(int) for _ in range(num_qubits)]
@@ -178,8 +188,10 @@ def build_program(
 
         with for_(n, 0, n < num_shots, n + 1):
             save(n, n_st)
-            # Coupler-flux amplitude loop (outer -> y axis)
-            with for_(*from_array(c_a, coupler_amplitudes)):
+            # Coupler-flux amplitude loop (outer -> y axis). It iterates the
+            # SCALES (volts / reference, computed above), in the same order as the
+            # volts axis the data is labelled with.
+            with for_(*from_array(c_a, coupler_scales)):
                 # Swap-count loop (inner -> x axis)
                 with for_(*from_array(r, rounds_array)):
                     # Initialization: thermalize / actively reset every involved qubit.
@@ -199,13 +211,14 @@ def build_program(
                         qubit.xy.update_frequency(stark_if[qubit.name])
 
                     # Circuit body: N swaps on the pair, each at the swept COUPLER
-                    # amplitude. ctrl_amp is left None so the control qubit's flux
+                    # amplitude, handed over as a ready scale so nothing is computed
+                    # in front of the coupler's play. The control qubit's flux
                     # pulse plays bare at its calibrated resonance amplitude - the
                     # exact mirror of qc_n_swap_amp, which sweeps that and leaves
                     # the coupler bare. A dynamic loop bound on r means N=0 skips
                     # the body entirely (the prep-only baseline).
                     with for_(rr, 0, rr < r, rr + 1):
-                        swap_pair.macros[swap_operation].apply(cplr_amp=c_a)
+                        swap_pair.macros[swap_operation].apply(cplr_scale=c_a)
                         if gap_cycles > 0:
                             swap_pair.wait(gap_cycles)
                         align()

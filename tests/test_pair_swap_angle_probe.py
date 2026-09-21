@@ -7,7 +7,7 @@ Two halves, deliberately:
   refusal an operator can act on (register this macro, bring that coupler up);
 * the BUILD is rendered from the live ``quam_state``, because a QUA program is
   made out of the vendor's own macros and there is no honest stand-in for
-  ``pair.macros["iswap"].apply(cplr_amp=...)``. It skips by name when the
+  ``pair.macros["iswap"].apply(cplr_scale=...)``. It skips by name when the
   committed state cannot express the sweep -- which, at the time this probe was
   written, it could not: both live couplers carry their swap pulse at amplitude
   0.0, the exact state the zero-amplitude guard exists for.
@@ -97,11 +97,11 @@ def test_guards_refuse_by_name_before_any_qua(override, message):
 
 
 def test_a_coupler_baked_at_zero_is_refused_and_names_the_fix():
-    """THE trap this probe exists to guard. The macro turns cplr_amp into an
+    """THE trap this probe exists to guard. The swept volts become an
     amplitude_scale by DIVIDING by the stored coupler amplitude, so a coupler
     baked at 0.0 -- the state of every chip whose swaps have only ever been
     detuning swaps -- is unsettable, not merely weak. Uncaught it is a division
-    by zero inside the vendor macro; caught, it names the register script."""
+    by zero far from its cause; caught, it names the register script."""
     with pytest.raises(ValueError, match="baked at amplitude 0.0"):
         build_program(**_kwargs(pair=_pair(coupler_amp=0.0)))
     with pytest.raises(ValueError, match="register_flattop_cosine.py"):

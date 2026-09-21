@@ -4,17 +4,20 @@
 A 2D variant of the retired qc_N_swap probe (git history): on top of the swap-count sweep (N, inner
 axis) the **control-qubit flux amplitude of the swap macro is swept** (outer axis), the
 same knob `pair_swap_flux_map` sweeps in its `swap_via_macro` mode.
-Each swap of the chain is applied as `swap_pair.macros[swap_operation].apply(ctrl_amp=q_a)`:
-`ctrl_amp` is the swept amplitude in **absolute volts** (the macro rescales its z flux
-pulse by `ctrl_amp / ref`), while the coupler plays bare at its baked amplitude
-(`cplr_amp=None`). Every swap in a chain uses the same swept amplitude.
+The swept amplitude is in **absolute volts**; this builder divides it by the macro z
+pulse's stored amplitude in PYTHON and the QUA loop iterates the resulting
+amplitude_scale, which each swap receives as `apply(ctrl_scale=...)`, while the coupler
+plays bare at its baked amplitude. Every swap in a chain uses the same swept amplitude.
+Dividing in QUA instead (`apply(ctrl_amp=<QUA variable>)`) would put the arithmetic
+inside every round, between its align() and its play, so the rounds would no longer be
+the bare gate's rounds -- the macro refuses it for that reason.
 
 Circuit per shot (for a swept amplitude a and swap count N):
   1. Initialize every involved qubit with `q.reset(reset_type, simulate)`
      (involved = measured qubits + the swap pair's control/target).
   2. State prep: `swap_pair.qubit_control.xy.play("x180")`.
-  3. Repeat N times: `swap_pair.macros[swap_operation].apply(ctrl_amp=a)`, then idle the
-     pair's flux lines for `operation_gap_ns` (if nonzero).
+  3. Repeat N times: `swap_pair.macros[swap_operation].apply(ctrl_scale=a/ref)`, then idle
+     the pair's flux lines for `operation_gap_ns` (if nonzero).
   4. Read out every measured qubit (state discrimination -> discriminated state, else raw I/Q).
 
 Reading the measured qubits versus (amplitude, N) gives a 2D population map per joint state
@@ -26,7 +29,7 @@ marginals; without it the shot-averaged raw I/Q is saved instead. There is no fi
 state writeback.
 
 The chosen macro must expose a string `flux_pulse` playable on the control qubit's z
-line and accept `apply(ctrl_amp=...)` (e.g. the lab `ISwapImplementation`); its stored
+line and accept `apply(ctrl_scale=...)` (e.g. the lab `ISwapImplementation`); its stored
 z-pulse amplitude is the rescaling reference and must be nonzero.
 
 QM N-swap x flux-amplitude error-amplification map for scqo — supplies ``probe()``.
@@ -34,9 +37,10 @@ QM N-swap x flux-amplitude error-amplification map for scqo — supplies ``probe
 Parameters, the record-only map summary and the (absent) writeback are inherited
 from ``scqo.experiments.QcNSwapAmp``. The vendor probe
 (``build_program`` below) excites the pair's CONTROL qubit and plays
-every swap through ``pair.macros[swap_operation].apply(ctrl_amp=...)`` — the
-control-side flux amplitude in absolute volts, exactly scqo's ``flux_amp_v``
-axis — and keeps EVERY shot's per-qubit discriminated state. This adapter:
+every swap through ``pair.macros[swap_operation].apply(ctrl_scale=...)`` — the
+control-side flux amplitude, swept in absolute volts (exactly scqo's
+``flux_amp_v`` axis) and converted to the macro's scale before the program is
+built — and keeps EVERY shot's per-qubit discriminated state. This adapter:
 
 * refuses unless ``drive_side``/``flux_side`` resolve to the vendor CONTROL
   member (the probe has no target-side mode; a silent role mismatch would
@@ -102,7 +106,8 @@ def build_program(
     `swap_pair` is a qubit-pair object whose `macros[swap_operation]` is applied each swap.
     `rounds_array` is the integer sweep over the number of swaps (N=0 allowed, giving just
     the x180 prep, inner axis); `qubit_amplitudes` is the control-qubit flux amplitude
-    sweep in absolute volts (outer axis), passed to each swap as the macro's `ctrl_amp`.
+    sweep in absolute volts (outer axis), converted here to the macro's `ctrl_scale`
+    (volts / the pulse's stored amplitude, in Python, so no division runs inside a round).
     All measured qubits are read out within the same shot (joint / multiplexed readout),
     since they share one circuit.
 
@@ -121,7 +126,7 @@ def build_program(
 
     involved = _dedup_involved(measure_qubits, swap_pair)
 
-    # Validate the macro's swept-ctrl_amp path (the pair_qcq_fixed_time swap_via_macro
+    # Validate the macro's swept control-amplitude path (the pair_qcq_fixed_time swap_via_macro
     # contract): the macro must exist, its z flux pulse must be playable and its stored
     # amplitude is the rescaling reference for the absolute-volt sweep.
     if swap_operation not in swap_pair.macros:
@@ -130,24 +135,24 @@ def build_program(
     ops = swap_pair.qubit_control.z.operations
     if not isinstance(flux_pulse_name, str) or flux_pulse_name not in ops:
         raise ValueError(
-            f"Macro {swap_operation!r} on {swap_pair.name} has no z flux_pulse playable with ctrl_amp "
+            f"Macro {swap_operation!r} on {swap_pair.name} has no z flux_pulse playable at a swept amplitude "
             f"(flux_pulse={flux_pulse_name!r})."
         )
     # Rail + amplitude_scale + idle-sum guard, shared with every other flux probe.
     # The macro's z pulse is the amplitude_scale REFERENCE (not a `const`, so the
     # rail/2 convention deliberately does not apply to it), and the swept volts are
     # an excursion on top of whatever standing bias initialize_qpu applied — this
-    # probe takes no flux_point argument, so the declaration is what runs.
-    # (the returned reference is unused here — the MACRO does its own ctrl_amp/ref
-    # rescaling internally; this call is for its refusals)
+    # probe takes no flux_point argument, so the declaration is what runs. The
+    # reference it returns is what the volts are divided by, here and not in QUA.
     z = swap_pair.qubit_control.z
-    check_flux_pulse_relative(
+    ctrl_ref = check_flux_pulse_relative(
         z,
         name=f"{swap_pair.name} macro {swap_operation!r} on {swap_pair.qubit_control.name}.z",
         idle_v=declared_idle_offset_v(z),
         amps_v=qubit_amplitudes,
         operation=flux_pulse_name,
     )
+    ctrl_scales = qubit_amplitudes / ctrl_ref
 
     # With state discrimination we save the per-shot discriminated states (so the joint
     # multi-qubit populations can be reconstructed downstream), hence the extra `shot` axis.
@@ -177,7 +182,7 @@ def build_program(
     with program() as prog:
         # Macro to declare I, Q, n and their respective streams for the measured qubits.
         I, I_st, Q, Q_st, n, n_st = machine.declare_qua_variables()
-        q_a = declare(fixed)  # swept ctrl flux amplitude (absolute volts)
+        q_a = declare(fixed)  # swept ctrl flux amplitude, as the macro's amplitude_scale
         r = declare(int)  # swept swap count (current value from rounds_array)
         rr = declare(int)  # inner swap counter
         if use_state_discrimination:
@@ -191,8 +196,10 @@ def build_program(
 
         with for_(n, 0, n < num_shots, n + 1):
             save(n, n_st)
-            # Qubit-flux amplitude loop (outer -> y axis)
-            with for_(*from_array(q_a, qubit_amplitudes)):
+            # Qubit-flux amplitude loop (outer -> y axis). It iterates the SCALES
+            # (volts / reference, computed above), in the same order as the volts
+            # axis the data is labelled with.
+            with for_(*from_array(q_a, ctrl_scales)):
                 # Swap-count loop (inner -> x axis)
                 with for_(*from_array(r, rounds_array)):
                     # Initialization: thermalize / actively reset every involved qubit.
@@ -205,12 +212,14 @@ def build_program(
                     align()
 
                     # Circuit body: N swaps on the pair, each at the swept ctrl amplitude
-                    # (the coupler plays bare at its baked amplitude, cplr_amp=None).
+                    # (the coupler plays bare at its baked amplitude). The amplitude
+                    # reaches the macro as a ready scale, so nothing is computed
+                    # between a round's align() and its play.
                     # Dynamic loop bound on r -> N=0 skips the body entirely (baseline).
                     # `gap_cycles` idles the pair's flux lines between gate operations so
                     # each swap's flux pulse can settle before the next one fires.
                     with for_(rr, 0, rr < r, rr + 1):
-                        swap_pair.macros[swap_operation].apply(ctrl_amp=q_a)
+                        swap_pair.macros[swap_operation].apply(ctrl_scale=q_a)
                         if gap_cycles > 0:
                             swap_pair.wait(gap_cycles)
                         align()
@@ -305,7 +314,7 @@ class QMQcNSwapAmp(QcNSwapAmp):
         if drive != "control" or flux != "control":
             raise ValueError(
                 f"qc_n_swap_amp on QM excites AND flux-drives the vendor pair's "
-                f"CONTROL member (the swap macro's ctrl_amp is the only swept "
+                f"CONTROL member (the swap macro's control-side amplitude is the only swept "
                 f"knob), but drive_side={self.params.drive_side!r} / flux_side="
                 f"{self.params.flux_side!r} resolve to (drive={drive}, "
                 f"flux={flux}). Select the control-side role for both — or run "
