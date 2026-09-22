@@ -76,6 +76,14 @@ scqo_qm/
                          #   new IF, or a cold start. Results land in calibration_db.json,
                          #   OUTSIDE state.json - so vendor_config_snapshot cannot capture
                          #   them, and power_context records the digest instead.
+    register_partial_swap.py  # operator CLI: python -m scqo_qm.backend.register_partial_swap
+                         #   - add or retune a square partial swap on one pair of the
+                         #   active setup: control z pulse + coupler pulse
+                         #   (partial_swap_square_<t>) + ISwapImplementation macro
+                         #   (partial_swap_<t>). state.json is replaced only after a
+                         #   staged save proves nothing else changes, so an edit that
+                         #   landed on disk after loading is never overwritten. Step 2
+                         #   of SCQO/procedures/pair-partial-swap
   experiments/
     __init__.py          # one import line per experiment module so @register runs (manual;
                          #   tests/test_experiment_registration.py enforces completeness both
@@ -328,6 +336,7 @@ qualibrate_config computes its path once, at import).
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
 | `test_quam_save_hermetic.py` | issue #38: build (quam_builder's own saves included), load and save a tree with no qualibrate config; the save lands in the LOAD folder even when `QUAM_STATE_PATH` has moved | yes |
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
+| `test_register_partial_swap.py` | the partial-swap operator CLI on a COPY of the live quam_state: the three entries land and nothing else moves; every refusal (name contract, clipping amplitude, an edit that landed on disk after loading) leaves the folder untouched | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |
 | `test_sequential_probe.py` | the BACKEND-PARITY half: qubit_spectroscopy's drive/readout timing in both `readout_overlap` modes, asserted on generated QUA (quote-agnostic vs qm versions) | yes |

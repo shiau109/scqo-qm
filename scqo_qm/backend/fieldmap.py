@@ -779,4 +779,23 @@ OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
                 "job discards data it had not yet streamed out, including a "
                 "measurement someone else started. Run --dry-run first unless "
                 "you know the cluster is idle."),
+    OperatorCommand(
+        name="register_partial_swap",
+        command="python -m scqo_qm.backend.register_partial_swap --pair <pair> "
+                "--name partial_swap_<t> --z-amp <V> --coupler-amp <V>",
+        doc="Add or retune a square partial-swap operation on one qubit pair: "
+            "the control qubit's z pulse (the swap resonance) and the coupler "
+            "pulse (the angle), both named partial_swap_square_<t>, plus the "
+            "ISwapImplementation macro partial_swap_<t> that experiments play "
+            "by name (<t> = target angle x 100, three digits). Step 2 of "
+            "SCQO/procedures/pair-partial-swap. The live state.json is "
+            "replaced only after a staged save proves nothing else changes. "
+            "Fully offline.",
+        options="--update (retune an existing operation's amplitudes)  "
+                "--length NS (new operation only, default 40)  --list (show "
+                "the pairs' partial swaps, write nothing)  --dry-run  "
+                "--config PATH",
+        caution="Writes the setup's live state.json: a run in progress "
+                "records the edit as setup-snapshot drift, so run it between "
+                "measurements."),
 )
