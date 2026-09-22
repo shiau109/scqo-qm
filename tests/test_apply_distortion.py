@@ -57,11 +57,14 @@ def _facts(amps, taus):
 def test_reads_flux_channel_applies_and_saves():
     m = _machine()
     sess = _session(m, _facts([0.05, -0.03], [100e-9, 3000e-9]))
-    out = apply_distortion_from_state("q1", session=sess)  # cfg=None -> bare save()
+    out = apply_distortion_from_state("q1", session=sess)  # cfg=None -> no state_dir
     assert out["channel"] == "q1_z"  # fact-vs-mode bridge: q1 -> q1_z
     assert m.qubits["q1"].z.opx_output.exponential_filter == [
         [0.05, 100.0], [-0.03, 3000.0]]  # tau s->ns
-    assert out["saved"] is True and len(m._saves) == 1  # machine.save() once
+    # saved once, and include_defaults is PASSED: left to QUAM it is read from
+    # ~/.qualibrate/config.toml, which raises on a machine without one (issue #38)
+    assert out["saved"] is True
+    assert m._saves == [{"path": None, "include_defaults": True}]
     assert out["scale"] == 1.0 and out["existing_taps"] == 0
 
 
@@ -154,7 +157,8 @@ def test_clear_empties_the_filter_and_saves():
     out = clear_distortion("q1", session=_session(m, {}))
     assert m.qubits["q1"].z.opx_output.exponential_filter == []
     assert out["removed"] == [[0.9, 999.0], [0.1, 5.0]]
-    assert out["saved"] is True and len(m._saves) == 1
+    assert out["saved"] is True
+    assert m._saves == [{"path": None, "include_defaults": True}]  # issue #38
 
 
 def test_clear_dry_run_removes_nothing():

@@ -51,6 +51,7 @@ from scqo_qm.backend._distortion import (
     apply_exponential_filter,
     clear_exponential_filter,
 )
+from scqo_qm.quam_io import save_state
 
 #: the roster channel kind of a qubit's flux line (catalog CHANNELS).
 FLUX_KIND = "flux"
@@ -129,10 +130,7 @@ def clear_distortion(
         )
     did_save = bool(save and not dry_run)
     if did_save:
-        if state_dir:
-            machine.save(path=state_dir)
-        else:
-            machine.save()
+        save_state(machine, state_dir)
     return {"target": target, "removed": removed,
             "state_dir": state_dir, "saved": did_save}
 
@@ -217,10 +215,7 @@ def apply_distortion_from_state(
         )
     did_save = bool(save and not dry_run)
     if did_save:
-        if state_dir:
-            machine.save(path=state_dir)
-        else:
-            machine.save()
+        save_state(machine, state_dir)
 
     return {
         "target": target,

@@ -107,6 +107,10 @@ scqo_qm/
                          #   built on them is backend/_power.py. Package root because
                          #   experiments/ cannot import from backend/ without cycling
   quam_fields.py         # the single neutral-field <-> QUAM mapping + whole-tree audits
+  quam_io.py             # how a QUAM tree is SAVED: save_state(machine, path) with
+                         #   include_defaults passed, so no save reads ~/.qualibrate
+                         #   (issue #38); the lab root pins it on its serialiser too, for
+                         #   the bare saves inside quam_builder's builders
   components/            # lab pulse shapes + macros (FlatTopCosinePulse, ISwapImplementation,
                          #   ParametricReset - PERSISTED as __class__ in state.json: moving or
                          #   renaming them requires scripts/migrate_state_scqo_qm.py-style care)
@@ -308,7 +312,10 @@ every commit.
 frozen at 2.3.0. Do not test in it. The v3.0.0 release notes already recorded it failing to
 collect for want of `typing_extensions`, and every recent cut was validated with the shared venv. No test count is quoted here on purpose - see the `OFFLINE-VALIDATED` line in the
 matching RELEASES.toml block for what each release actually ran. Live-state tests load the repo-relative `quam_state/` (hermetic — no
-`~/.qualibrate` dependency).
+`~/.qualibrate` dependency). Loading never needed it; SAVING did until issue #38, and a
+load-only test cannot see that - `test_quam_save_hermetic.py` builds, loads and saves a
+tree with the config hidden (`QUAM_CONFIG_FILE` at a missing file, never `HOME`:
+qualibrate_config computes its path once, at import).
 
 | File | Covers | Needs QM stack? |
 |---|---|---|
@@ -319,6 +326,7 @@ matching RELEASES.toml block for what each release actually ran. Live-state test
 | `test_preview.py` | the probe_self_acquires census + preview refusal ordering | no |
 | `test_qc_populations.py`, `test_pair_swap_probes.py`, `test_parity_switch_shell.py`, `test_t1_tracking_shells.py`, `test_ramsey_cryoscope_probe.py`, `test_spectroscopy_cryoscope_probe.py` | pure builder math, param mapping, AST properties of the fused modules | no |
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
+| `test_quam_save_hermetic.py` | issue #38: build (quam_builder's own saves included), load and save a tree with no qualibrate config; the save lands in the LOAD folder even when `QUAM_STATE_PATH` has moved | yes |
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |

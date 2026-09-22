@@ -47,6 +47,7 @@ from scqo.entities import Channel, Composite
 from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
+from scqo_qm.quam_io import save_state
 from scqo_qm._family import (
     FLUX_OPX_PLUS,
     RF_EXTERNAL_MIXER,
@@ -815,10 +816,12 @@ class QMDeviceModel(DeviceModel):
     composite onto the QUAM qubit_pair. The roster is therefore not optional —
     without it the driver cannot tell what ``q1_ro`` means.
 
-    ``state_dir``: explicit save target. Set it whenever the machine was loaded from a
-    non-default location (e.g. the setup's ``instrument_config`` folder) — a bare
-    ``machine.save()`` writes to QUAM's configured default (the live ``quam_state/``),
-    which may not be the folder this session's state actually lives in.
+    ``state_dir``: explicit save target — the folder the machine was loaded from.
+    ``QMBackend.load`` always passes it. ``QuamRoot.load(path)`` does not remember
+    ``path``, so without it a save lands wherever ``QUAM_STATE_PATH`` (or qualibrate's
+    ``state_path``) points at the time, which may not be the folder this session's
+    state actually lives in. Every save goes through ``scqo_qm.quam_io.save_state``,
+    so none consults ``~/.qualibrate`` (issue #38).
     """
 
     def __init__(self, machine: Any, roster: "Roster",
@@ -975,10 +978,7 @@ class QMDeviceModel(DeviceModel):
         return (op,) if op else ()
 
     def save(self) -> None:
-        if self._state_dir is not None:
-            self._machine.save(path=self._state_dir)
-        else:
-            self._machine.save()
+        save_state(self._machine, self._state_dir)
 
     def snapshot(self) -> dict:
         """``{entity: {knob: value}}`` over the entities this backend realizes.
@@ -1045,24 +1045,27 @@ class QMBackend(Backend):
     """scqo Backend over a Quantum Machines OPX (via QUAM + the fused experiment builders)."""
 
     def __init__(self, machine: Any, *, roster: "Roster",
-                 timeout: float = _QM_SESSION_TIMEOUT_S) -> None:
+                 timeout: float = _QM_SESSION_TIMEOUT_S,
+                 state_dir: str | None = None) -> None:
         self._machine = machine
         self._roster = roster
-        self._device = QMDeviceModel(machine, roster)
+        self._device = QMDeviceModel(machine, roster, state_dir=state_dir)
         self._timeout = timeout
 
     @classmethod
     def load(cls, *, roster: "Roster", state_path: str | None = None,
              timeout: float = _QM_SESSION_TIMEOUT_S) -> "QMBackend":
         """Construct from a QUAM state. ``state_path`` overrides ``QUAM_STATE_PATH``;
-        when omitted the env / default configuration is used."""
+        when omitted the env / default configuration is used. A given ``state_path``
+        is also the device's explicit SAVE target, so a save never depends on the env
+        var still pointing where this session loaded from."""
         import os
 
         from quam_config import Quam
 
         if state_path is not None:
             os.environ["QUAM_STATE_PATH"] = state_path
-        return cls(Quam.load(), roster=roster, timeout=timeout)
+        return cls(Quam.load(), roster=roster, timeout=timeout, state_dir=state_path)
 
     @property
     def device(self) -> QMDeviceModel:

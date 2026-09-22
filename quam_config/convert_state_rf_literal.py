@@ -49,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     from quam_config import Quam
+    from scqo_qm.quam_io import save_state
 
     machine = Quam.load(str(folder))
     converted = 0
@@ -80,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     if not converted:
         print(f"nothing to convert in {folder}")
         return 0
-    machine.save()
+    # QuamRoot.load(folder) does not remember folder: a bare save() would go to
+    # QUAM_STATE_PATH / qualibrate's state_path while the line below named folder.
+    save_state(machine, str(folder))
     print(f"converted {converted} channel(s); saved -> {folder}")
     return 0
 

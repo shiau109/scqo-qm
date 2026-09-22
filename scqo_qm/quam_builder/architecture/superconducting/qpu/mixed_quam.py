@@ -31,6 +31,7 @@ stores ``quam_config.my_quam.Quam`` resolves to whatever that module currently s
 from typing import Any, Dict, Optional, Union
 
 from quam.core import quam_dataclass
+from quam.serialisation import JSONSerialiser  # the return annotation below
 from quam_builder.architecture.superconducting.qpu.flux_tunable_quam import (
     FluxTunableQuam,
 )
@@ -39,6 +40,8 @@ from quam_builder.architecture.superconducting.qubit_pair import (
     AnyTransmonPair,
     FluxTunableTransmonPair,
 )
+
+from scqo_qm.quam_io import INCLUDE_DEFAULTS
 
 __all__ = ["MixedTransmonQuam", "flux_line"]
 
@@ -81,6 +84,28 @@ class MixedTransmonQuam(FluxTunableQuam):
     @classmethod
     def load(cls, *args, **kwargs) -> "MixedTransmonQuam":
         return super().load(*args, **kwargs)
+
+    @classmethod
+    def get_serialiser(cls) -> JSONSerialiser:
+        """QUAM's serialiser with ``include_defaults`` pinned (``scqo_qm.quam_io``).
+
+        Left unset, QUAM looks it up in ``~/.qualibrate/config.toml`` on every save
+        that does not pass it, and raises FileNotFoundError on a machine that has no
+        such file (issue #38). scqo's own saves pass it explicitly; this covers the
+        ones no scqo call site reaches — the bare ``machine.save()`` inside
+        quam_builder's ``build_quam_wiring`` / ``build_quam``, and the register_*
+        scripts. It is QUAM's documented extension point, and it applies to every
+        lab state, because each one names this class as its root ``__class__``.
+
+        EXTEND the vendor's serialiser, never replace it: quam_builder's
+        ``BaseQuam.get_serialiser`` carries the ``content_mapping`` that splits
+        ``wiring`` / ``network`` out into ``wiring.json``. A fresh ``JSONSerialiser``
+        would write the whole tree into ``state.json`` and leave ``wiring.json``
+        stale beside it.
+        """
+        serialiser = super().get_serialiser()
+        serialiser.include_defaults = INCLUDE_DEFAULTS
+        return serialiser
 
     # ------------------------------------------------------------------ flux points
     def apply_all_flux_to_joint_idle(self) -> None:
