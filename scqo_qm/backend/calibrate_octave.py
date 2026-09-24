@@ -9,10 +9,10 @@ Octave setup ran every measurement uncalibrated with nothing saying so.
 
 Run it (in ``.venv-qm``)::
 
-    python -m scqo_qm.backend.calibrate_octave                 # every active qubit
-    python -m scqo_qm.backend.calibrate_octave --target q1 q2  # just these
-    python -m scqo_qm.backend.calibrate_octave --readout-only
-    python -m scqo_qm.backend.calibrate_octave --dry-run       # say what, calibrate nothing
+    scqo-qm calibrate-octave                 # every active qubit
+    scqo-qm calibrate-octave --target q1 q2  # just these
+    scqo-qm calibrate-octave --readout-only
+    scqo-qm calibrate-octave --dry-run       # say what, calibrate nothing
 
 **When to re-run it.** The results are cached in ``calibration_db.json``, keyed
 by ``(RF output, LO frequency, gain)`` for the LO-leakage correction and by
@@ -46,7 +46,7 @@ every other backend's operator could only ever be refused by.
 
 Not destructive, but it does take the cluster: it opens a Quantum Machine and
 plays tones on the calibrated elements. Do not run it while a measurement is
-live.
+live - ``scqo-qm cluster`` shows whether one is.
 """
 
 from __future__ import annotations
@@ -195,9 +195,9 @@ def calibrate(*, targets: list[str] | None = None, drive: bool = True,
     return report
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, prog: str = "scqo-qm calibrate-octave") -> int:
     p = argparse.ArgumentParser(
-        prog="python -m scqo_qm.backend.calibrate_octave",
+        prog=prog,
         description="Calibrate the Octave up-conversion mixers (LO leakage and "
                     "image) for the ACTIVE scqo device/setup.",
     )

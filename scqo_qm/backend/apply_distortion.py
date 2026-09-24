@@ -12,9 +12,9 @@ opens a ``QuantumMachinesManager``.
 
 Run it (in ``.venv-qm``)::
 
-    python -m scqo_qm.backend.apply_distortion --target q1
-    python -m scqo_qm.backend.apply_distortion --target q1 --dry-run   # preview only
-    python -m scqo_qm.backend.apply_distortion --target q1 --extend    # append a residual
+    scqo-qm apply-distortion --target q1
+    scqo-qm apply-distortion --target q1 --dry-run   # preview only
+    scqo-qm apply-distortion --target q1 --extend    # append a residual
 
 It never runs automatically on ``scqo accept`` — applying predistortion is a
 deliberate, opt-in step (measure a fresh full correction on a filter-CLEARED line;
@@ -230,9 +230,9 @@ def apply_distortion_from_state(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, prog: str = "scqo-qm apply-distortion") -> int:
     p = argparse.ArgumentParser(
-        prog="python -m scqo_qm.backend.apply_distortion",
+        prog=prog,
         description="Apply accepted cryoscope distortion taps to the QM z-output "
         "exponential_filter for the ACTIVE scqo device/setup.",
     )

@@ -480,12 +480,12 @@ def test_distortion_apply_command_is_the_hint_hook_scqo_asks_for(backend):
 
     assert callable(getattr(backend, HOOK, None))  # the name scqo actually asks
     assert backend.distortion_apply_command("q1", "RUN-1") == (
-        "python -m scqo_qm.backend.apply_distortion --target q1 --run RUN-1")
+        "scqo-qm apply-distortion --target q1 --run RUN-1")
     assert backend.distortion_apply_command("q2") == (
-        "python -m scqo_qm.backend.apply_distortion --target q2")
+        "scqo-qm apply-distortion --target q2")
 
     lines = apply_hint_lines("qubit_ramsey_cryoscope", backend, ["q1"], "RUN-1")
-    assert any("apply_distortion --target q1 --run RUN-1" in line for line in lines)
+    assert any("scqo-qm apply-distortion --target q1 --run RUN-1" in line for line in lines)
 
 
 def test_readout_power_dbm_solves_the_chain_bidirectionally(backend, stub_machine):

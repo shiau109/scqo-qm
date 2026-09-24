@@ -1,4 +1,4 @@
-"""``QMBackend.close_qm`` + the ``scqo_qm.backend.close_qm`` operator CLI.
+"""``QMBackend.close_qm`` + the ``scqo-qm close-qm`` operator CLI.
 
 No cluster and no scqo config: the manager, the QMs and the jobs are doubles,
 and the CLI takes an INJECTED session — the live ``build_session`` half is
@@ -134,10 +134,6 @@ def test_a_broken_listing_is_an_error_not_a_crash():
 
 # ------------------------------------------------------------------------ CLI
 
-def _session(qmm, *, label="qm"):
-    return SimpleNamespace(backend=_backend(qmm), backend_label=label)
-
-
 def test_cli_refuses_a_non_qm_setup_by_name():
     """A simulated or Qblox setup has nothing to close; say so rather than
     returning a benign-looking empty report."""
@@ -146,18 +142,6 @@ def test_cli_refuses_a_non_qm_setup_by_name():
         close_open_qms(session=session)
     assert "simulated" in str(excinfo.value)
     assert "no Quantum Machines to close" in str(excinfo.value)
-
-
-def test_dry_run_lists_without_closing():
-    qmm = _QMM({"qm-1": _QM("qm-1", job=_Job("job-7"))})
-    report = close_open_qms(session=_session(qmm), dry_run=True)
-
-    assert report["dry_run"] is True
-    assert report["open_qms"] == ["qm-1"]
-    assert report["closed_qms"] == [] and report["halted_jobs"] == []
-    assert qmm.qms["qm-1"].closed is False
-    assert qmm.closed_all is False
-    assert qmm.closed is True                        # the probe's own manager
 
 
 def test_cli_main_reports_and_exits_zero(monkeypatch, capsys):
@@ -180,8 +164,12 @@ def test_cli_main_exits_one_when_a_step_failed(monkeypatch, capsys):
 
 
 def test_cli_help_names_the_flags(capsys):
+    """No --dry-run: the look-first listing is `scqo-qm cluster`, the one
+    read-only door, so this destructive command does not carry a second one."""
     with pytest.raises(SystemExit) as excinfo:
         main(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    assert "--qm-id" in out and "--dry-run" in out
+    assert out.startswith("usage: scqo-qm close-qm")
+    assert "--qm-id" in out and "--dry-run" not in out
+    assert "scqo-qm cluster" in out

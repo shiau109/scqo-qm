@@ -30,6 +30,12 @@ dependencies = [
     "scqo",
 ]
 
+# The operator commands (scqo_qm/cli.py): `scqo-qm cluster`, `scqo-qm close-qm`, ...
+# Vendor tools, deliberately NOT scqo subcommands. Like the entry points below it
+# registers at install time - re-run `uv pip install -e` after changing it.
+[project.scripts]
+scqo-qm = "scqo_qm.cli:main"
+
 # Advertise the QM scqo experiments so Session.catalog() finds them without a manual
 # import (scqo loads this lazily on first catalog()).
 [project.entry-points."scqo.experiments"]

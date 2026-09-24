@@ -16,11 +16,11 @@ Experiments play the macro by name (``swap_operation=partial_swap_030``).
 
 Run it (in ``.venv-qm``)::
 
-    python -m scqo_qm.backend.register_partial_swap --pair q1_q2 --name partial_swap_030 \\
+    scqo-qm register-partial-swap --pair q1_q2 --name partial_swap_030 \\
         --z-amp -0.1500 --coupler-amp 0.0875
-    python -m scqo_qm.backend.register_partial_swap --pair q1_q2 --name partial_swap_030 \\
+    scqo-qm register-partial-swap --pair q1_q2 --name partial_swap_030 \\
         --update --z-amp -0.14987         # retune: the amplitudes only
-    python -m scqo_qm.backend.register_partial_swap --list    # what the pairs carry
+    scqo-qm register-partial-swap --list    # what the pairs carry
 
 The write is surgical by PROOF, not by intent. The edited tree is saved to a temporary
 folder first and compared with the live files, and the live ``state.json`` is replaced
@@ -314,9 +314,9 @@ def _volts(value: Any) -> str:
     return "-" if value is None else f"{value:.6g} V"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, prog: str = "scqo-qm register-partial-swap") -> int:
     p = argparse.ArgumentParser(
-        prog="python -m scqo_qm.backend.register_partial_swap",
+        prog=prog,
         description="Add or retune a square partial-swap operation (control z pulse + coupler "
         "pulse + ISwapImplementation macro) on one qubit pair of the ACTIVE scqo device/setup.",
     )

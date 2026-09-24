@@ -169,8 +169,8 @@ def test_field_catalog_matches_implementation():
 
 def test_operator_command_inventory():
     """The vendor CLIs this driver ships. They are not scqo subcommands, so
-    `scqo -h` cannot show them and this inventory (rendered by
-    `scqo state --fields`) is where an operator finds them instead of
+    `scqo -h` cannot show them and this inventory (rendered by `scqo-qm -h`
+    and `scqo state --fields`) is where an operator finds them instead of
     memorizing them."""
     import importlib.util
 
@@ -185,10 +185,11 @@ def test_operator_command_inventory():
         assert all(s.isascii() for s in (c.name, c.command, c.doc, c.options,
                                          c.caution)), c.name
         # anti-rot: a renamed or moved operator module fails HERE, in CI, and
-        # not six weeks later in the lab with a command that no longer exists
-        for word in c.command.split():
-            if word.startswith("scqo_qm."):
-                assert importlib.util.find_spec(word), f"{c.name}: {word}"
+        # not six weeks later in the lab with a command that no longer exists.
+        # The inventory IS scqo-qm's dispatch table (scqo_qm/cli.py): the
+        # template must spell the subcommand the name dispatches to.
+        assert c.command.split()[:2] == ["scqo-qm", c.name.replace("_", "-")], c.command
+        assert importlib.util.find_spec(f"scqo_qm.backend.{c.name}"), c.name
 
 
 def test_distortion_hint_and_inventory_agree():

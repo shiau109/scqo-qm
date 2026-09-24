@@ -24,6 +24,10 @@ scqo_qm/
                          #   guard BEFORE any QUAM state is touched, loads the setup's vendor
                          #   folder (canonical names state.json + wiring.json; loud SystemExit
                          #   when missing), audits flux points/headroom/drive frequency, threads the ROSTER
+  cli.py                 # `scqo-qm <command>` console script: dispatches FROM
+                         #   fieldmap.OPERATOR_COMMANDS to backend/<name>.main(argv, prog).
+                         #   Vendor tools, NOT scqo subcommands. -h costs ~5 s: any import
+                         #   under scqo_qm runs the package __init__, which imports qm
   backend/
     qm_backend.py        # QMBackend (scqo.Backend) + QMDeviceModel + ONE view class per
                          #   CHANNEL KIND (QMDriveChannel/QMReadoutChannel/QMFluxChannel)
@@ -33,7 +37,9 @@ scqo_qm/
                          #   kind) + VENDOR_ONLY, whose coupled/edit/counterpart carry the
                          #   OPERATIONAL half of a hand edit (what moves with it, what to
                          #   satisfy first, Qblox's name for it) + OPERATOR_COMMANDS, the
-                         #   CLIs below. Both inventories render in `scqo state --fields`,
+                         #   CLIs below - and scqo_qm/cli.py's DISPATCH TABLE (entry name =
+                         #   module name, `_`->`-` = subcommand; `scqo-qm -h` renders it
+                         #   unscoped). Both inventories render in `scqo state --fields`,
                          #   FILTERED to the tree's RF chain: VENDOR_ONLY splits COMMON /
                          #   MW_FEM / OCTAVE (the exported union is the complete inventory,
                          #   which is what the structural self-checks run against), and a
@@ -48,11 +54,17 @@ scqo_qm/
                          #   tree (test fixtures + scripts/check_real_config.py; the REAL roster
                          #   is <data_root>/<device>/components.toml)
     _distortion.py       # flux-distortion facts -> exponential-filter arithmetic (pure)
-    apply_distortion.py  # operator CLI: python -m scqo_qm.backend.apply_distortion
+    apply_distortion.py  # operator CLI: scqo-qm apply-distortion
                          #   (QMBackend.distortion_apply_command hands scqo's two
                          #   cryoscopes this command line as their writeback hint;
                          #   also listed by `scqo state --fields`)
-    close_qm.py          # operator CLI: python -m scqo_qm.backend.close_qm - halt
+    cluster.py           # operator CLI: scqo-qm cluster - READ-ONLY: the open QMs on
+                         #   the cluster (cluster-wide, every user's) and each one's
+                         #   unfinished jobs with start times. QOP 3.x get_jobs shows the
+                         #   queue; QOP 2.x falls back to get_running_job and says the
+                         #   queue is unknown. The one look-first door before close-qm,
+                         #   which therefore has no --dry-run of its own
+    close_qm.py          # operator CLI: scqo-qm close-qm - halt
                          #   jobs + close open QMs when a dead session still holds
                          #   the cluster's locks (QMBackend.close_qm does the work).
                          #   NOT the same thing as scqo's Backend.release_instruments
@@ -62,10 +74,10 @@ scqo_qm/
                          #   and there is nothing to hand back before a prompt. This
                          #   door is for a session that DIED mid-job. (scqo-qblox
                          #   implements the hook - it has no disconnect at all.)
-                         #   Listed by `scqo state --fields`, which is the only
-                         #   place an operator can DISCOVER it - `scqo -h` cannot
-                         #   show a command that is not a scqo subcommand.
-    calibrate_octave.py  # operator CLI: python -m scqo_qm.backend.calibrate_octave -
+                         #   Listed by `scqo-qm -h` and `scqo state --fields` -
+                         #   `scqo -h` cannot show a command that is not a scqo
+                         #   subcommand.
+    calibrate_octave.py  # operator CLI: scqo-qm calibrate-octave -
                          #   calibrate the Octave up-conversion mixers (LO leakage +
                          #   image) for the active setup. An MW-FEM synthesizes its own
                          #   microwave and has no such step, which is why nothing here
@@ -76,7 +88,7 @@ scqo_qm/
                          #   new IF, or a cold start. Results land in calibration_db.json,
                          #   OUTSIDE state.json - so vendor_config_snapshot cannot capture
                          #   them, and power_context records the digest instead.
-    register_partial_swap.py  # operator CLI: python -m scqo_qm.backend.register_partial_swap
+    register_partial_swap.py  # operator CLI: scqo-qm register-partial-swap
                          #   - add or retune a square partial swap on one pair of the
                          #   active setup: control z pulse + coupler pulse
                          #   (partial_swap_square_<t>) + ISwapImplementation macro
@@ -300,8 +312,9 @@ experiment — never add per-command wrappers). `simulated` is the practice mode
 - **Packaging:** dist `scqo-qm`; wheel packages `calibrations`, `calibration_utils`,
   `quam_config`, `customized` (frozen archive travels for exclude/ importability), `scqo_qm`.
   Entry points: `scqo.experiments` → `scqo_qm.experiments`; `scqo.backends` →
-  `qm = scqo_qm.scqo_backend:build_backend`. Entry points register at INSTALL time — re-run
-  `uv pip install -e` after changing them. Python `>=3.10,<3.13`, black `line-length = 120`.
+  `qm = scqo_qm.scqo_backend:build_backend`; console script `scqo-qm = scqo_qm.cli:main`.
+  Entry points and scripts register at INSTALL time — re-run `uv pip install -e` after
+  changing them. Python `>=3.10,<3.13`, black `line-length = 120`.
 
 ## Tests
 
@@ -336,6 +349,8 @@ qualibrate_config computes its path once, at import).
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
 | `test_quam_save_hermetic.py` | issue #38: build (quam_builder's own saves included), load and save a tree with no qualibrate config; the save lands in the LOAD folder even when `QUAM_STATE_PATH` has moved | yes |
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
+| `test_cluster.py` | the read-only `scqo-qm cluster` query: QOP 3.x rows + the QOP 2.x fallback, never a close/halt, an unreadable QM never reads as idle (doubles, no cluster) | yes |
+| `test_cli.py` | the `scqo-qm` dispatcher: every OPERATOR_COMMANDS entry reachable under its subcommand, the console script declared | yes |
 | `test_register_partial_swap.py` | the partial-swap operator CLI on a COPY of the live quam_state: the three entries land and nothing else moves; every refusal (name contract, clipping amplitude, an edit that landed on disk after loading) leaves the folder untouched | yes |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |

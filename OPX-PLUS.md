@@ -85,8 +85,8 @@ each of those is silent on hardware.
 **1. Calibrate the mixers. Do this first; everything after depends on it.**
 
 ```bash
-python -m scqo_qm.backend.calibrate_octave --dry-run
-python -m scqo_qm.backend.calibrate_octave
+scqo-qm calibrate-octave --dry-run
+scqo-qm calibrate-octave
 ```
 
 An Octave up-converts with an analog mixer, so every output carries LO leakage

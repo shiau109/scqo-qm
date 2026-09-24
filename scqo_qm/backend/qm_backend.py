@@ -1037,7 +1037,7 @@ def _progress_shot_total(experiment: "Experiment") -> int:
 #: While a neighbour's job -- or a dead session -- still holds them, every open fails with
 #: "Resources already locked" and qualang_tools polls until this budget runs out. 5 minutes
 #: outlasts a typical neighbouring run; past that the holder is usually dead and wants
-#: `python -m scqo_qm.backend.close_qm`, not more waiting.
+#: `scqo-qm cluster` (who holds it) then `scqo-qm close-qm`, not more waiting.
 _QM_SESSION_TIMEOUT_S = 300
 
 
@@ -1238,7 +1238,7 @@ class QMBackend(Backend):
         the CLI has.
         """
         run = f" --run {run_id}" if run_id else ""
-        return f"python -m scqo_qm.backend.apply_distortion --target {target}{run}"
+        return f"scqo-qm apply-distortion --target {target}{run}"
 
     def vendor_config_snapshot(self) -> dict[str, str]:
         """The QUAM tree as held in memory, as the files ``machine.save()`` would
@@ -1608,7 +1608,7 @@ class QMBackend(Backend):
         The recovery door for a cluster whose hardware locks are held by a
         crashed or abandoned session — the state that otherwise shows up as a
         job stalling forever, or an open that never returns. Driven by the
-        operator CLI :mod:`scqo_qm.backend.close_qm`, which is where the
+        operator CLI :mod:`scqo_qm.backend.close_qm` (``scqo-qm close-qm``), which is where the
         vendor-facing command lives (scqo's neutral core has no ``close_qm``:
         the command needs the vendor libraries, so it lives with them).
 

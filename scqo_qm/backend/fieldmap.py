@@ -717,19 +717,21 @@ def vendor_only_for(rf_chains) -> dict[str, VendorOnly]:
     return out
 
 
-#: The vendor OPERATOR CLIs this driver ships. They are not scqo subcommands
-#: (scqo run <name> is the single entry point, and a QM-specific verb could only
-#: be refused on Qblox), so `scqo -h` cannot list them - `scqo state --fields`
-#: renders this inventory instead, which is the only place an operator discovers
-#: them rather than memorizing them. Declared HERE and not in qm_backend.py
+#: The vendor OPERATOR CLIs this driver ships, as `scqo-qm <name>` subcommands
+#: (`_` -> `-`). This tuple IS the dispatch table: scqo_qm/cli.py runs
+#: scqo_qm.backend.<name>.main, so an entry's name is also its module's. They are
+#: not scqo subcommands (scqo run <name> is the single entry point, and a
+#: QM-specific verb could only be refused on Qblox), so `scqo -h` cannot list
+#: them - `scqo-qm -h` and `scqo state --fields` render this inventory instead,
+#: which is where an operator discovers them rather than memorizing them.
+#: Declared HERE and not in qm_backend.py
 #: because it is pure declarative vendor metadata of the same class as
 #: VENDOR_ONLY, and this module's import guard is what proves it stays
 #: vendor-free. Every string below compresses the target module's own docstring.
 OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
     OperatorCommand(
         name="apply_distortion",
-        command="python -m scqo_qm.backend.apply_distortion --target <target> "
-                "[--run <run_id>]",
+        command="scqo-qm apply-distortion --target <target> [--run <run_id>]",
         doc="LF-FEM flux lines only. Write accepted cryoscope taps "
             "(distortion_amp / distortion_tau_s "
             "are FACTS - accepting them records the measurement and pushes "
@@ -744,7 +746,7 @@ OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
                 "characterization)  --dry-run  --config PATH"),
     OperatorCommand(
         name="calibrate_octave",
-        command="python -m scqo_qm.backend.calibrate_octave [--target <qubit>...]",
+        command="scqo-qm calibrate-octave [--target <qubit>...]",
         doc="Octave trees only. Calibrate the Octave up-conversion mixers (LO "
             "leakage and image) for the active device/setup. An Octave mixes a "
             "baseband IQ pair up with an analog mixer, so every output carries "
@@ -766,23 +768,33 @@ OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
                 "directory you launched from."),
     OperatorCommand(
         name="close_qm",
-        command="python -m scqo_qm.backend.close_qm",
+        command="scqo-qm close-qm [--qm-id <id>]",
         doc="Halt running jobs and close the open Quantum Machines on the "
             "cluster serving the ACTIVE scqo device/setup - the recovery door "
             "when a crashed or abandoned session still holds the cluster's "
             "locks (symptom: a job that stalls forever, or an open that never "
             "returns). NOT a wedged-gateway fix: a cluster in "
             "DEADLINE_EXCEEDED needs a restart from its web UI.",
-        options="--qm-id ID (just this one)  --dry-run (list what is open, "
-                "close nothing)  --config PATH",
+        options="--qm-id ID (just this one)  --config PATH",
         caution="DESTRUCTIVE and there is NO confirmation prompt - halting a "
                 "job discards data it had not yet streamed out, including a "
-                "measurement someone else started. Run --dry-run first unless "
-                "you know the cluster is idle."),
+                "measurement someone else started. Run scqo-qm cluster first "
+                "to see what is open and running."),
+    OperatorCommand(
+        name="cluster",
+        command="scqo-qm cluster",
+        doc="Read-only. List the Quantum Machines open on the cluster serving "
+            "the active device/setup and, under each, the jobs that have not "
+            "finished (running, processing, queued) with their start times. "
+            "Cluster-wide: every user's QMs are shown, since they share the "
+            "cluster's locks, and an open QM with no job still holds its ports. "
+            "The look-first step before close-qm. On QOP 2.x only each QM's "
+            "running job is visible, not the queue.",
+        options="--config PATH"),
     OperatorCommand(
         name="register_partial_swap",
-        command="python -m scqo_qm.backend.register_partial_swap --pair <pair> "
-                "--name partial_swap_<t> --z-amp <V> --coupler-amp <V>",
+        command="scqo-qm register-partial-swap --pair <pair> --name partial_swap_<t> "
+                "--z-amp <V> --coupler-amp <V>",
         doc="Add or retune a square partial-swap operation on one qubit pair: "
             "the control qubit's z pulse (the swap resonance) and the coupler "
             "pulse (the angle), both named partial_swap_square_<t>, plus the "
