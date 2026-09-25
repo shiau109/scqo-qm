@@ -171,52 +171,6 @@ def test_role_side_refuses_the_selected_member_without_a_flux_channel(backend):
         role_side(exp, "high", field="flux_side", needs_flux=True)
 
 
-def _gef_experiment(backend, roster, **kw):
-    from scqo_qm.experiments.single_shot_readout_gef import QMSingleShotReadoutGEF
-
-    return make_experiment(QMSingleShotReadoutGEF, backend, roster,
-                           QMSingleShotReadoutGEF.Parameters(targets=["q1"], **kw))
-
-
-def _grant_ef_surface(machine, name="q1"):
-    """Give the stub qubit the calibrated EF surface a real chipA qubit has."""
-    from conftest import Pulse
-
-    qubit = machine.qubits[name]
-    qubit.xy.operations["EF_x180"] = Pulse(amplitude=0.16, length=16, alpha=-1.0)
-    qubit.anharmonicity = 205.2e6
-
-
-def test_gef_refuses_a_qubit_without_the_ef_surface(backend, roster):
-    """Preparing |f> needs a calibrated EF pi pulse. Without it the program would
-    still compile — case_(2) would just prepare |e> again — and the fit would
-    report a collapsed third blob, which reads as a readout problem rather than a
-    missing calibration. Refused by name instead, before any QUA is built."""
-    exp = _gef_experiment(backend, roster)
-    with pytest.raises(ValueError, match="EF_x180"):
-        exp.probe()
-
-
-def test_gef_passes_three_states_and_the_readout_shift_through(backend, roster, monkeypatch):
-    """The three-state program is the two-state one parameterized, so what the
-    shell owes the probe is exactly ``prepared_states`` and the per-run readout
-    detuning."""
-    from scqo_qm.experiments import _readout_fidelity as readout_fidelity
-
-    _grant_ef_surface(backend.machine)
-    seen = {}
-    monkeypatch.setattr(readout_fidelity, "build_program",
-                        lambda machine, qubits, **kw: seen.update(kw) or ("prog", {}))
-    monkeypatch.setattr("scqo_qm.experiments._lib.select_qubits",
-                        lambda machine, targets, **kw: list(targets))
-
-    exp = _gef_experiment(backend, roster, readout_freq_shift_hz=-600e3)
-    assert exp.probe() == ("prog", {})
-    assert seen["prepared_states"] == [0, 1, 2]
-    assert seen["readout_freq_shift_hz"] == -600e3
-    assert seen["reset_type"] == "thermal"
-
-
 def test_thermal_population_probe_prepares_the_ground_state_only(backend, roster,
                                                                  monkeypatch):
     """One prepared state, no drive pulse: the cloud is whatever the passive wait

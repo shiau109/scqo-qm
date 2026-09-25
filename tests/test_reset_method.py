@@ -150,7 +150,6 @@ def test_no_probe_hardcodes_a_reset_literal():
     "readout_frequency",        # sweeps the readout condition
     "readout_power",            # sweeps the readout amplitude
     "single_shot_readout",      # IS the discriminator calibration
-    "single_shot_readout_gef",
     "qubit_sqrb",               # ex-leaker, now refused by name
 ])
 def test_denied_shells_refuse_active_by_name(name):

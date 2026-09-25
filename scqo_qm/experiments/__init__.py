@@ -69,5 +69,4 @@ from . import resonator_spectroscopy_flux  # noqa: F401  (import side effect: @r
 from . import resonator_spectroscopy_power_chain  # noqa: F401  (import side effect: @register)
 from . import resonator_spectroscopy_power_amp  # noqa: F401  (import side effect: @register)
 from . import single_shot_readout  # noqa: F401  (import side effect: @register)
-from . import single_shot_readout_gef  # noqa: F401  (import side effect: @register)
 

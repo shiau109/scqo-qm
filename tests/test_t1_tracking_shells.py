@@ -154,7 +154,7 @@ class TestVendorPrerequisites:
 
 
 class TestShellToProbeMapping:
-    """Pin the shell -> probe parameter mapping with no QUAM (the gef-test
+    """Pin the shell -> probe parameter mapping with no QUAM (the readout-probe
     pattern: monkeypatch build_program + select_qubits, capture kwargs)."""
 
     def _capture(self, monkeypatch, probe_module_name):

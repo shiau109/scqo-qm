@@ -111,7 +111,7 @@ scqo_qm/
     _vendor.py           # the one door out of the neutral surface (raw QUAM element by ROSTER)
     _pair_roles.py       # joint-population digit reordering for the pair maps
     _qc_populations.py   # shared swap-reset population math
-    _readout_fidelity.py # shared SSRO builder (single_shot_readout / _gef / thermal_population)
+    _readout_fidelity.py # shared SSRO builder (single_shot_readout / thermal_population)
     _resonator_spectroscopy.py  # shared 1D builder (resonator_spectroscopy / _power_chain)
   _family.py             # which hardware family a channel declares - duck-typed, never
                          #   isinstance (the suite builds channels as SimpleNamespace and

@@ -1,11 +1,11 @@
 """Readout-fidelity acquisition probe: vendor code only (qm/quam) - no qualibrate, no scqo, no scqat.
 
-Single-shot readout of each qubit prepared in |0> and |1> (optionally |2>); the IQ blobs are fitted
-downstream to characterise the readout fidelity at the current settings.
+Single-shot readout of each qubit prepared in |0> and |1>; the IQ blobs are fitted downstream to
+characterise the readout fidelity at the current settings.
 
 `prepared_states` selects WHICH states are prepared, and the shape of everything downstream follows
-it: [0, 1] is the two-state default, [0, 1, 2] adds the |f> blob (needs a calibrated EF pi pulse and
-`anharmonicity`), and [0] alone is the ground-state-only cloud a thermal-population measurement wants.
+it: [0, 1] is the two-state default, and [0] alone is the ground-state-only cloud a
+thermal-population measurement wants.
 """
 
 from typing import Callable, Optional, Sequence
@@ -26,21 +26,14 @@ def build_program(
     reset_type: str,
     simulate: bool = False,
     prepared_states: Sequence[int] = (0, 1),
-    readout_freq_shift_hz: float = 0.0,
 ):
     """Build the readout-fidelity QUA program. Returns (program, sweep_axes).
 
-    `num_shots` single shots are taken per prepared state (0 = ground, 1 = x180-excited,
-    2 = x180 then EF_x180); `qubits` is a BatchableList (see `_lib.select_qubits`).
-
-    `readout_freq_shift_hz` detunes the resonator for this program only (the |f> state
-    pulls the resonator further than |e>, so the best three-state readout point is not
-    the g/e one). It is emitted only when non-zero, so the two-state default compiles
-    to exactly the program it always did.
+    `num_shots` single shots are taken per prepared state (0 = ground, 1 = x180-excited);
+    `qubits` is a BatchableList (see `_lib.select_qubits`).
     """
     num_qubits = len(qubits)
     prepared_states = list(prepared_states)
-    with_ef = 2 in prepared_states
 
     sweep_axes = {
         "qubit": xr.DataArray(qubits.get_names()),
@@ -57,12 +50,6 @@ def build_program(
             for qubit in multiplexed_qubits.values():
                 machine.initialize_qpu(target=qubit)
             align()
-
-            if readout_freq_shift_hz:
-                for qubit in multiplexed_qubits.values():
-                    qubit.resonator.update_frequency(
-                        qubit.resonator.intermediate_frequency + int(readout_freq_shift_hz)
-                    )
 
             with for_(n, 0, n < num_shots, n + 1):
                 # ground iq blobs for all qubits
@@ -82,18 +69,6 @@ def build_program(
                                 pass
                             with case_(1):
                                 qubit.xy.play("x180")
-                            if with_ef:
-                                with case_(2):
-                                    # 0->1 at the qubit frequency, then 1->2 an
-                                    # anharmonicity below it, and back so the next
-                                    # x180 plays at the right frequency again.
-                                    qubit.xy.play("x180")
-                                    update_frequency(
-                                        qubit.xy.name,
-                                        qubit.xy.intermediate_frequency - qubit.anharmonicity,
-                                    )
-                                    qubit.xy.play("EF_x180")
-                                    update_frequency(qubit.xy.name, qubit.xy.intermediate_frequency)
 
                         qubit.align()
                     # Qubit readout
