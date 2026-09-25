@@ -1688,10 +1688,10 @@ def test_ade_tracking_program_builds_on_live_state(machine, live_roster):
 
 
 def test_bayesian_tracking_program_builds_on_live_state(machine, live_roster):
-    """The u = 1/k posterior update (Math.inv/ln/exp, both phi branches) and
-    the QUAM confusion-matrix reads serialise against the live config.
-    Thresholds — and the confusion matrix when the live state lacks one — are
-    written in memory and restored as plain lists (no QuamList re-parenting)."""
+    """The u = 1/k posterior update (Math.inv/ln/exp, both phi branches) serialises
+    against the live config. The SPAM pair is a builder ARGUMENT (the shell reads the
+    readout channel's measured fidelities), so only the thresholds are written in
+    memory here, and they are restored."""
     from qm import generate_qua_script
 
     from scqo_qm.experiments._lib import select_qubits
@@ -1705,18 +1705,15 @@ def test_bayesian_tracking_program_builds_on_live_state(machine, live_roster):
 
     qubit = machine.qubits[name]
     pulse = qubit.resonator.operations["readout"]
-    cm = qubit.resonator.confusion_matrix
-    saved_cm = None if cm is None else [list(row) for row in cm]
     saved = (pulse.threshold, pulse.rus_exit_threshold)
     try:
         pulse.threshold = -1.0e-4
         pulse.rus_exit_threshold = -2.0e-4
-        if qubit.resonator.confusion_matrix is None:
-            qubit.resonator.confusion_matrix = [[0.95, 0.05], [0.09, 0.91]]
         qubits = select_qubits(machine, [name], multiplexed=False)
         prog, _ = bayes_probe.build_program(
             machine, qubits, num_blocks=2, num_probes=5,
             c_adaptive=0.51, k0=1.0, t1_prior_s={name: 35e-6},
+            spam_pairs={name: (0.05, 0.09)},
             t1_min_s=1e-6, t1_max_s=100e-6, k_min=0.2, k_max=100.0,
             interleaved=True,
             lin_wait_cycles=np.array([4, 50, 500, 5000, 50000]),
@@ -1726,7 +1723,6 @@ def test_bayesian_tracking_program_builds_on_live_state(machine, live_roster):
         assert generate_qua_script(prog, machine.generate_config())
     finally:
         pulse.threshold, pulse.rus_exit_threshold = saved
-        qubit.resonator.confusion_matrix = saved_cm
 
 
 # ------------------------------------------------------- setup snapshot (stub)

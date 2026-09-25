@@ -20,9 +20,10 @@ Numeric-range rationale (QUA ``fixed`` is signed 4.28, range [-8, 8)):
   fixed-arithmetic product ``tau_ms * 250000`` exceeds 8 and WRAPS (modulo 16)
   to a garbage wait — the classic silent fixed-point failure.
 * The SPAM-aware likelihood reads alpha = P(read 0 | prep 1) and
-  beta = P(read 1 | prep 0) from QUAM's ``resonator.confusion_matrix``
-  (rows prepared |g>,|e>; cols measured) — the shell refuses a qubit whose
-  matrix is missing BEFORE any QUA is built.
+  beta = P(read 1 | prep 0) — the readout channel's measured assignment
+  fidelities, alpha = 1 - fidelity_e and beta = 1 - fidelity_g (the rows of a
+  confusion matrix sum to 1). The shell resolves them and refuses a qubit whose
+  fidelities are unmeasured BEFORE any QUA is built; the builder takes numbers.
 
 Heterogeneous streams (per-block scalars, (block, probe) arrays, evolution
 vectors, a timestamp stream) rule out ``_lib.acquire`` / XarrayDataFetcher,
@@ -38,11 +39,13 @@ the backend uses the probe module's OWN ``acquire()``.
 Two vendor-side prerequisites, each refused BY NAME before any QUA is built:
 
 * a calibrated readout threshold (the sequence discriminates every shot);
-* QUAM's ``resonator.confusion_matrix`` — the SPAM-aware likelihood reads
-  alpha = P(read 0 | prep 1) and beta = P(read 1 | prep 0) from it. The matrix
-  is written by the 07_iq_blobs qualibrate node; it is deliberately dead to
-  SCQO's neutral surface (placement rule), so the probe reads it straight off
-  the QUAM tree and this shell owns the refusal.
+* the readout channel's ``fidelity_g`` / ``fidelity_e`` monitors, which
+  ``single_shot_readout`` stores on every successful run: the SPAM-aware
+  likelihood needs alpha = P(read 0 | prep 1) = 1 - fidelity_e and
+  beta = P(read 1 | prep 0) = 1 - fidelity_g. They are scqo state, measured on
+  THIS setup, so the run that produced them is provenance a QUAM-side matrix
+  never had. Both are staleness-gated the same way every stored readout
+  reference is: they describe the readout condition they were measured at.
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ def build_program(
     c_adaptive: float,
     k0: float,
     t1_prior_s: Dict[str, float],
+    spam_pairs: Dict[str, tuple],
     t1_min_s: float,
     t1_max_s: float,
     k_min: float,
@@ -155,10 +159,11 @@ def build_program(
 
         for multiplexed_qubits in qubits.batch():
             for i, qubit in multiplexed_qubits.items():
-                # SPAM likelihood terms from QUAM's stored confusion matrix
-                # (rows prepared |g>,|e>; cols measured |g>,|e>).
-                assign(alpha[i], qubit.resonator.confusion_matrix[1][0])  # P(0|e)
-                assign(beta[i], qubit.resonator.confusion_matrix[0][1])   # P(1|g)
+                # SPAM likelihood terms, resolved by the shell from the readout
+                # channel's measured assignment fidelities (build-time numbers).
+                spam_alpha, spam_beta = spam_pairs[qubit.name]
+                assign(alpha[i], float(spam_alpha))  # P(read 0 | prep 1)
+                assign(beta[i], float(spam_beta))    # P(read 1 | prep 0)
 
             for qubit in multiplexed_qubits.values():
                 machine.initialize_qpu(target=qubit)
@@ -415,16 +420,28 @@ from scqo.experiments import QubitT1Bayesian
 from .qubit_t1_ade import discriminator_problems
 
 
-def confusion_matrix_problems(machine, names: list[str]) -> list[str]:
-    """One message per qubit lacking a usable 2x2 confusion matrix."""
-    problems = []
+def spam_terms(device, names: list[str]) -> tuple[dict, list[str]]:
+    """``({target: (alpha, beta)}, problems)`` from the readout fidelities.
+
+    alpha = P(read 0 | prep 1) = 1 - fidelity_e and beta = P(read 0 wrong way) =
+    1 - fidelity_g, the two off-diagonal entries of the assignment matrix (its rows
+    sum to 1). A fidelity that is unmeasured (None) or outside (0.5, 1] gives a
+    message instead: at or below 0.5 the readout carries no information about that
+    state, and the likelihood would divide by a SPAM span of zero or less.
+    """
+    spam, problems = {}, []
     for name in names:
-        qubit = machine.qubits[name]
-        matrix = getattr(qubit.resonator, "confusion_matrix", None)
-        if (matrix is None or len(matrix) != 2
-                or any(len(row) != 2 for row in matrix)):
-            problems.append(f"{name} has no 2x2 resonator.confusion_matrix")
-    return problems
+        view = device.channel(name, "readout")
+        pairs = (("fidelity_e", getattr(view, "fidelity_e", None)),
+                 ("fidelity_g", getattr(view, "fidelity_g", None)))
+        bad = [field for field, value in pairs
+               if value is None or not (0.5 < float(value) <= 1.0)]
+        if bad:
+            problems.append(f"{name} has no measured {' and '.join(bad)}")
+            continue
+        fidelity_e, fidelity_g = (float(value) for _, value in pairs)
+        spam[name] = (1.0 - fidelity_e, 1.0 - fidelity_g)
+    return spam, problems
 
 
 @register
@@ -442,15 +459,15 @@ class QMQubitT1Bayesian(QubitT1Bayesian):
         machine = self.backend.machine  # type: ignore[attr-defined]
         targets = list(self.params.targets)
 
-        problems = discriminator_problems(machine, targets)
-        problems += confusion_matrix_problems(machine, targets)
+        spam, problems = spam_terms(self.device, targets)
+        problems = discriminator_problems(machine, targets) + problems
         if problems:
             raise ValueError(
-                "qubit_t1_bayesian needs a calibrated discriminator AND a "
-                "measured confusion matrix (the SPAM-aware likelihood reads "
-                "alpha/beta from it): " + "; ".join(problems) + ". Run "
-                "single_shot_readout (accept readout_threshold), then the "
-                "07_iq_blobs qualibrate node to store the confusion matrix."
+                "qubit_t1_bayesian needs a calibrated discriminator AND measured "
+                "readout fidelities (the SPAM-aware likelihood reads alpha/beta "
+                "from them): " + "; ".join(problems) + ". Run single_shot_readout "
+                "and accept its proposals - the discriminator knobs are governed, "
+                "and fidelity_g/fidelity_e are stored on every successful run."
             )
 
         qubits = select_qubits(machine, targets, multiplexed=False)
@@ -464,6 +481,7 @@ class QMQubitT1Bayesian(QubitT1Bayesian):
             c_adaptive=float(self.params.adaptive_c),
             k0=float(self.params.k0),
             t1_prior_s={t: self._t1_prior_s[t] for t in targets},
+            spam_pairs=spam,
             t1_min_s=float(self.params.t1_min_s),
             t1_max_s=float(self.params.t1_max_s),
             k_min=float(self.params.k_min),

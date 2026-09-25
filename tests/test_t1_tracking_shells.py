@@ -14,8 +14,8 @@ QUA build cannot check for itself):
 * both probes reset through the one door (`qubit.reset(reset_type, ...)`) and
   never call `reset_qubit_active` directly;
 * the shells refuse BY NAME: a missing readout threshold (both — the
-  sequences always discriminate) and a missing confusion matrix (Bayesian —
-  the SPAM-aware likelihood reads alpha/beta from it).
+  sequences always discriminate) and unmeasured readout fidelities (Bayesian —
+  the SPAM-aware likelihood reads alpha/beta from `fidelity_e`/`fidelity_g`).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from scqo_qm.experiments.qubit_t1_ade import (
 )
 from scqo_qm.experiments.qubit_t1_bayesian import (
     QMQubitT1Bayesian,
-    confusion_matrix_problems,
+    spam_terms,
 )
 
 _PROBES_DIR = Path(__file__).resolve().parents[1] / "scqo_qm" / "experiments"
@@ -53,13 +53,11 @@ def _called_names(probe: Path) -> set[str]:
             if isinstance(node, ast.Call)}
 
 
-def _stub_qubit(*, threshold=0.001, confusion=((0.95, 0.05), (0.09, 0.91))):
+def _stub_qubit(*, threshold=0.001):
     return SimpleNamespace(
         xy=SimpleNamespace(operations={"x180": SimpleNamespace(length=40)}),
         resonator=SimpleNamespace(
             operations={"readout": SimpleNamespace(threshold=threshold)},
-            confusion_matrix=None if confusion is None
-            else [list(row) for row in confusion],
         ),
     )
 
@@ -68,10 +66,18 @@ def _stub_machine(**qubit_kwargs):
     return SimpleNamespace(qubits={"q1": _stub_qubit(**qubit_kwargs)})
 
 
-def _shell(cls, machine, **params):
+def _stub_device(*, fidelity_g=0.91, fidelity_e=0.95):
+    """The scqo device surface, reduced to the readout monitors the Bayesian
+    shell reads (``single_shot_readout`` stores both on a successful run)."""
+    view = SimpleNamespace(fidelity_g=fidelity_g, fidelity_e=fidelity_e)
+    return SimpleNamespace(channel=lambda target, kind: view)
+
+
+def _shell(cls, machine, device=None, **params):
     exp = cls.__new__(cls)
     exp.params = cls.Parameters(targets=["q1"], **params)
     exp.backend = SimpleNamespace(machine=machine)
+    exp.device = device if device is not None else _stub_device()
     return exp
 
 
@@ -119,23 +125,31 @@ class TestVendorPrerequisites:
             "q1 has no readout threshold"]
         assert discriminator_problems(_stub_machine(), ["q1"]) == []
 
-    def test_confusion_matrix_problems_names_the_qubit(self):
-        assert confusion_matrix_problems(
-            _stub_machine(confusion=None), ["q1"]
-        ) == ["q1 has no 2x2 resonator.confusion_matrix"]
-        assert confusion_matrix_problems(
-            _stub_machine(confusion=((1.0,),)), ["q1"]
-        ) == ["q1 has no 2x2 resonator.confusion_matrix"]
-        assert confusion_matrix_problems(_stub_machine(), ["q1"]) == []
+    def test_spam_terms_are_the_off_diagonals_of_the_measured_fidelities(self):
+        spam, problems = spam_terms(
+            _stub_device(fidelity_g=0.91, fidelity_e=0.95), ["q1"])
+        assert problems == []
+        # alpha = P(read 0 | prep 1) = 1 - fidelity_e; beta = 1 - fidelity_g
+        assert spam["q1"] == pytest.approx((0.05, 0.09))
+
+    def test_spam_terms_name_the_missing_or_uninformative_fidelity(self):
+        _, problems = spam_terms(_stub_device(fidelity_e=None), ["q1"])
+        assert problems == ["q1 has no measured fidelity_e"]
+        # at 0.5 the readout says nothing about that state: the SPAM span is zero
+        _, problems = spam_terms(_stub_device(fidelity_g=0.5), ["q1"])
+        assert problems == ["q1 has no measured fidelity_g"]
+        _, problems = spam_terms(_stub_device(fidelity_g=None, fidelity_e=None), ["q1"])
+        assert problems == ["q1 has no measured fidelity_e and fidelity_g"]
 
     def test_ade_probe_refuses_without_a_threshold(self):
         exp = _shell(QMQubitT1Ade, _stub_machine(threshold=None))
         with pytest.raises(ValueError, match="single_shot_readout"):
             exp.probe()
 
-    def test_bayesian_probe_refuses_without_a_confusion_matrix(self):
-        exp = _shell(QMQubitT1Bayesian, _stub_machine(confusion=None))
-        with pytest.raises(ValueError, match="07_iq_blobs"):
+    def test_bayesian_probe_refuses_without_measured_readout_fidelities(self):
+        exp = _shell(QMQubitT1Bayesian, _stub_machine(),
+                     device=_stub_device(fidelity_e=None))
+        with pytest.raises(ValueError, match="single_shot_readout"):
             exp.probe()
 
 
@@ -191,6 +205,8 @@ class TestShellToProbeMapping:
         assert captured["num_probes"] == 20
         assert captured["c_adaptive"] == pytest.approx(0.51)
         assert captured["t1_prior_s"] == {"q1": 35e-6}
+        # the SPAM pair the builder plants as QUA literals, from the monitors
+        assert captured["spam_pairs"]["q1"] == pytest.approx((0.05, 0.09))
         assert captured["interleaved"] is True
         assert len(captured["lin_wait_cycles"]) == 20
         # the validation grid rides sweep_axes so acquire() can label lin_wait_s
