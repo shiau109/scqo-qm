@@ -1,5 +1,9 @@
 """Shared plumbing for probes: target selection and the execute-and-fetch half.
-No qualibrate imports.
+
+``BatchableList`` and ``XarrayDataFetcher`` come from
+``scqo_qm._vendored.qualibration_libs`` — a copy of the two modules this file needs,
+because the upstream distribution requires ``qualibrate`` and this driver does not run
+it (see that package's README; ``tests/test_lib_fetcher.py`` pins the contract).
 
 Flux amplitude/rail validation lives in ``_flux_limits.py`` — a probe asking
 "may this port emit these volts?" imports from there, not here.
@@ -10,8 +14,8 @@ from typing import Callable, List, Optional
 import xarray as xr
 from qualang_tools.multi_user import qm_session
 from qualang_tools.results import progress_counter
-from qualibration_libs.core import BatchableList
-from qualibration_libs.data import XarrayDataFetcher
+
+from scqo_qm._vendored.qualibration_libs import BatchableList, XarrayDataFetcher
 
 
 def select_qubits(machine, names: Optional[List[str]] = None, *, multiplexed: bool = False) -> BatchableList:
