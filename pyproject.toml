@@ -1,7 +1,7 @@
 [project]
 name = "scqo-qm"
 version = "3.13.0"
-description = "Quantum Machines backend for the scqo instrument-agnostic experiment API + vendored official qualibrate calibrations"
+description = "Quantum Machines backend for the scqo instrument-agnostic experiment API"
 readme = "README.md"
 license = { text = "BSD-3-Clause" }
 requires-python = ">=3.10,<3.13"
@@ -11,20 +11,19 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # `quam` pulls `qualibrate-config` in, and that stays: quam reads it on every
+    # serialiser lookup. `qualibrate` itself does NOT — it went with the GUI, and
+    # with it the fastapi/uvicorn/sqlalchemy/psycopg2 stack it dragged into every
+    # QM environment. The two `qualibration-libs` pieces this driver used are
+    # vendored under scqo_qm/_vendored/ (BSD-3, upstream 09fc735).
     "quam>=0.5.0a1",
     "qualang-tools>=0.19.0",
-    "qualibrate>=1.0.2",
     "qm-qua>=1.2.1",
     "tomli>=2.0.1; python_version < '3.11'",
     "quam-builder@git+https://github.com/qua-platform/quam-builder.git@v0.5.0",
-    "qualibration-libs@git+https://github.com/qua-platform/qualibration-libs.git@09fc7357b7233b313827931733ae4b7d493e71b8",
     "xarray>=2024.7.0",
     "plotly>=5.24.1",
-    "lmfit>=1.3.3",
     "scipy>=1.13.1",
-    "qiskit-experiments>=0.9.0",
-    "tqdm>=4.67.1",
-    "qiskit<2.0",
     # the shared, vendor-free experiment API — a HARD dependency since the v1
     # restructure (matches scqo-qblox; kills the old `uv run` uninstall trap)
     "scqo",
@@ -62,13 +61,12 @@ build-backend = "hatchling.build"
 dev = ["ipykernel>=7.0.0a1", "pytest>=8.3.5"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["calibrations", "calibration_utils", "quam_config", "customized", "scqo_qm"]
+packages = ["quam_config", "scqo_qm"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 # [tool.uv.sources]
 # quam-builder = { git = "https://github.com/qua-platform/quam-builder.git" }
-# qualibration-libs = { git = "https://github.com/qua-platform/qualibration-libs.git" }
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]   # never collect calibrations/ (qualibrate nodes execute at import; exclude/ has *_test.py names)
+testpaths = ["tests"]

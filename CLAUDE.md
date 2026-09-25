@@ -1,18 +1,20 @@
 # scqo-qm — project guide
 
 ## Project Overview
-Two products in one repo (renamed from LCHQMDriver in the v1 restructure):
+One product (renamed from LCHQMDriver in the v1 restructure):
 1. **`scqo_qm/`** — the Quantum Machines backend for **`scqo`**, the vendor-neutral
    experiment API shared with the Qblox driver. It serves BOTH QM RF chains through
    one backend name: MW-FEM (OPX1000) and Octave (OPX+, or an OPX1000 with LF-FEMs).
    The chassis is the wrong axis to reason about - see [OPX-PLUS.md](OPX-PLUS.md) ([scqo-qblox](https://github.com/shiau109/scqo-qblox)), so the same experiment
    runs on either instrument through one `Session`. scqo is a HARD dependency.
-2. **Vendored official qualibrate calibrations** (`calibrations/` + `calibration_utils/`, copied in
-   by `sync_official.py`) — the qualibrate GUI path, official nodes only. The custom LCH_* qualibrate
-   shells were RETIRED in the v1 restructure; `calibrations/exclude/` + its `customized/node/`
-   packages are a frozen archive (never edit, never import from live code, not runnable).
+This repo used to carry a second product, the vendored official qualibrate calibrations
+(`calibrations/` + `calibration_utils/`) plus the frozen `customized/` archive of the retired
+LCH_* shells. All of it was REMOVED after v3.13.0, which is the last release (and the tag) that
+carries it; git history has the rest. Nothing here reads `~/.qualibrate`, and neither
+`qualibrate` nor `qualibration-libs` is a dependency — the two pieces this driver used are
+copied into `scqo_qm/_vendored/`.
 
-Vendor stack: **qm-qua** → **quam** → **qualibrate** (read-only in the workspace). Design, the
+Vendor stack: **qm-qua** → **quam** (read-only in the workspace). Design, the
 `Session` contract, and cross-repo terminology (Experiment = probe + estimator) live in
 `SCQO\CLAUDE.md`; analysis runs through scqat **estimators** inherited via scqo.
 
@@ -137,10 +139,12 @@ scqo_qm/
                          #   build scripts allowed a bare load and the census of
                          #   non-QUAM .save() receivers
   _vendored/             # third-party code COPIED in, licence + upstream commit beside
-                         #   it: qualibration_libs' BatchableList + XarrayDataFetcher
-                         #   (its distribution requires qualibrate; this driver does
-                         #   not). Byte-identical to upstream bar the intra-package
-                         #   import - fix behaviour in scqo_qm/, never here
+                         #   it: qualibration_libs' BatchableList + XarrayDataFetcher.
+                         #   Vendored rather than depended on because that
+                         #   DISTRIBUTION requires qualibrate, which is how a GUI
+                         #   stack (fastapi, uvicorn, sqlalchemy, psycopg2) reached
+                         #   every QM environment. Byte-identical to upstream bar the
+                         #   intra-package import - fix behaviour in scqo_qm/, never here
   components/            # lab pulse shapes + macros (FlatTopCosinePulse, ISwapImplementation,
                          #   ParametricReset - PERSISTED as __class__ in state.json: moving or
                          #   renaming them requires scripts/migrate_state_scqo_qm.py-style care)
@@ -151,12 +155,6 @@ quam_config/             # QUAM class entrypoint (my_quam.py: Quam(MixedTransmon
 quam_state/              # serialized instrument config (state.json/wiring.json; gitignored);
                          #   every scqo run snapshots the IN-MEMORY tree the same way
                          #   (QMBackend.vendor_config_snapshot -> <device>/setup_snapshots/)
-calibrations/            # OFFICIAL vendored nodes only + exclude/ (frozen archive)
-                         #   + offline_graph/ (manual LCH_graph_* post-processing scripts)
-calibration_utils/       # vendored official support code (regenerate via sync_official.py)
-customized/              # FROZEN RUMP of the retired qualibrate era: node/ packages the
-                         #   exclude/ archive imports + common_parameters + read_data.
-                         #   Never edit; never import from live code.
 scripts/                 # check_real_config.py, migrate_state_scqo_qm.py (the package-rename
                          #   state migration), migrate_root_class.py, migrate_thermalizing_*.py
 ```
@@ -175,10 +173,10 @@ scripts/                 # check_real_config.py, migrate_state_scqo_qm.py (the p
    vendor-only bits come from `_vendor.vendor_element(...)`. Shared guards: `_flux_limits`,
    `_amp_limits`, `_reset.check_reset_method`.
 4. May import qm.qua (module-level star-import is the DSL's requirement), quam, qualang_tools,
-   `qualibration_libs.core`/`.data`, scqo; NEVER qualibrate, never scqat.
+   `scqo_qm._vendored.qualibration_libs`, scqo; NEVER `qualibrate` or the installed
+   `qualibration_libs` (neither is a dependency any more), never scqat.
 5. Census literals that react to a new experiment: `tests/test_preview.py` `SELF_ACQUIRING`
    (probe_self_acquires shells), `tests/test_reset_method.py` `CARRIERS` (active-reset opt-in).
-A qualibrate node is NOT part of adding an experiment (the GUI serves official nodes only).
 
 ## Physics + backend invariants (verified against the working tree)
 
@@ -275,16 +273,16 @@ physical.json as truth; QUAM's stored measured artifacts (confusion_matrix, gate
 are dead to SCQO.
 
 ### State authority (`state_sync` rule)
-scqo's `RecordingDevice` owns its own state JSON; the QUAM tree is the vendor store. The LCH
-qualibrate writers are RETIRED, but official nodes run through the GUI can still write QUAM, so
-**QM sessions keep `state_sync="pull"`** (the vendor wins at startup; scqo pushes only what it
-freshly measures — `scqo_qm/scqo_backend.py` enforces this before any QUAM state is loaded).
-`"push"` is additionally refused for EVERY hardware backend by scqo's `make_session` (temporary,
-core-side; only the built-in simulated backend runs push), so this guard is the QUAM-specific
-second line — flipping a device to `"push"` later needs both lifted. **Which QUAM state loads** is decided by the device's cooldown
-setup alone (`<device>/<cycle>/<name>/backend_config/` holding canonical `state.json` +
-`wiring.json`); keep qualibrate's own `[quam] state_path` pointed at the same folder on machines
-running both stacks. Every run additionally records a **setup snapshot** of the tree it executed
+scqo's `RecordingDevice` owns its own state JSON; the QUAM tree is the vendor store. **QM
+sessions keep `state_sync="pull"`** (the vendor wins at startup; scqo pushes only what it
+freshly measures). There is no backend-local guard any more: this driver used to carry a second
+one whose reason was "qualibrate nodes can still write QUAM", and it left with them. The ONE
+refusal is scqo's `make_session`, which refuses `"push"` for every hardware backend (temporary,
+core-side; only the built-in simulated backend runs push) for a reason that is still live — a
+push seeds the vendor config from `scqo_state.json` with no history rows and would clobber hand
+edits of it. SCQO BACKLOG F7 is when that lifts. **Which QUAM state loads** is decided by the
+device's cooldown setup alone (`<device>/<cycle>/<name>/backend_config/` holding canonical
+`state.json` + `wiring.json`). Every run additionally records a **setup snapshot** of the tree it executed
 against (`QMBackend.vendor_config_snapshot`: the in-memory `to_dict()` split exactly as
 `machine.save()` splits it, stored content-addressed under `<device>/setup_snapshots/`);
 `scqo restore` rebuilds one as a new setup, and the manifest's `versions` is what makes the
@@ -294,36 +292,29 @@ up as `setup_snapshot.drift` in the run record (and a RuntimeWarning).
 ### scqo student surface
 Students use the **`scqo` command** from any directory in `.venv-qm`
 (`scqo user --device <name> [--setup <name>]`; `scqo run <name>` is the one way to run an
-experiment — never add per-command wrappers). `simulated` is the practice mode. The qualibrate GUI
-(`qm.bat`) serves the OFFICIAL vendored nodes only.
+experiment — never add per-command wrappers). `simulated` is the practice mode. Vendor tools
+(cluster, close-qm, calibrate-octave, apply-distortion, ...) are `scqo-qm <command>`; there is
+no GUI.
 
 ## Key Entrypoints
 - `quam_config/my_quam.py` → `class Quam(MixedTransmonQuam)` — the QUAM class every path loads.
   The root class + the lab transmon/pulse/macro classes are PERSISTED by dotted path in
   state.json (`scqo_qm.*` since the v1 restructure): re-check `__class__` after any QUAM save,
   and gate config edits offline with `m.generate_config()` under `warnings.simplefilter("error")`.
-- `scripts/migrate_state_scqo_qm.py` → the `customized.*` → `scqo_qm.*` state migration with
-  positive verification (QUAM silently falls back to base classes on a missing import — never
-  trust absence-of-error).
 
 ## Operational Notes (verified against the working tree)
-- **Official code is VENDORED (copied), and committed.** `calibrations/<name>.py` +
-  `calibration_utils/<name>/` come from `sync_official.py` (`calibration_links.toml`;
-  `official_sync.json` records the vendored upstream commit). Do not edit vendored files in place.
-  Updating (~every 2 months): pull `qua-libs_official` → `python sync_official.py` → review diff →
-  commit. `customized/`'s frozen archive and `scqo_qm/` are never touched by the sync.
-- **`calibrations/offline_graph/`** holds manual `LCH_graph_*.py` post-processing scripts
-  (editable lab code; qualibrate does not list them).
+- **Third-party code is VENDORED (copied), and committed** — now only in
+  `scqo_qm/_vendored/`, with its licence and upstream commit beside it and its contract pinned
+  by `tests/test_lib_fetcher.py`. Do not edit it in place; update upstream and re-copy.
 - **Environments:** the scqo path runs in the shared `.venv-qm` (rebuildable from
   `requirements-qm.lock.txt`); siblings `.venv-view` (no instrument libs) and `.venv-qblox`.
-  Full rule for all four repos: [ENVIRONMENTS.md](ENVIRONMENTS.md). `qm.bat` activates `.venv-qm` and runs `qualibrate start` (GUI).
+  Full rule for all four repos: [ENVIRONMENTS.md](ENVIRONMENTS.md).
 - **qm logging vs the CLI JSON contract:** fused experiment modules import `qm.qua` at module
   level (the DSL star-import cannot be function-local), and qm's import-time logger writes to
   STDOUT by default — `scqo_qm/experiments/__init__.py` flips qm's own
   `QM_DISABLE_STREAMOUTPUT` switch and re-homes the records on stderr BEFORE the first qm import.
   Machines without the QM stack: scqo's entry-point discovery skips this driver gracefully.
-- **Packaging:** dist `scqo-qm`; wheel packages `calibrations`, `calibration_utils`,
-  `quam_config`, `customized` (frozen archive travels for exclude/ importability), `scqo_qm`.
+- **Packaging:** dist `scqo-qm`; wheel packages `quam_config` and `scqo_qm`.
   Entry points: `scqo.experiments` → `scqo_qm.experiments`; `scqo.backends` →
   `qm = scqo_qm.scqo_backend:build_backend`; console script `scqo-qm = scqo_qm.cli:main`.
   Entry points and scripts register at INSTALL time — re-run `uv pip install -e` after
@@ -342,7 +333,7 @@ every commit.
 
 **There is no repo-local venv for this repo.** A `scqo-qm/.venv` on disk is residue of a stray
 `uv run`: it resolves from `pyproject.toml` rather than the lockfile, and on this machine
-(checked 2026-09-04) it holds no `qm`, no `quam`, no `qualibrate` and no `scqat`, with `scqo`
+(checked 2026-09-04) it holds no `qm`, no `quam` and no `scqat`, with `scqo`
 frozen at 2.3.0. Do not test in it. The v3.0.0 release notes already recorded it failing to
 collect for want of `typing_extensions`, and every recent cut was validated with the shared venv. No test count is quoted here on purpose - see the `OFFLINE-VALIDATED` line in the
 matching RELEASES.toml block for what each release actually ran. Live-state tests load the repo-relative `quam_state/` (hermetic — no
@@ -375,7 +366,7 @@ qualibrate_config computes its path once, at import).
 | `test_check_real_config.py` | `scripts/check_real_config.py` end-to-end to its PASS line on the live quam_state (subprocess, ~14 s — exit code + final line asserted, never a pipeline fragment) | yes |
 
 ## Workspace Packages (Read-Only)
-The vendor stack (`qm` → `quam` → `quam_builder` → `qualibrate`) is available read-only; do NOT
+The vendor stack (`qm` → `quam` → `quam_builder`) is available read-only; do NOT
 The sibling repos are [SCQO](https://github.com/shiau109/SCQO) (the vendor-neutral core, a hard dependency resolved as `../SCQO`), [scqat](https://github.com/shiau109/scqat) (analysis) and [scqo-qblox](https://github.com/shiau109/scqo-qblox) (the Qblox backend - never import from it).
 
 ## Rules for the AI assistant
@@ -385,16 +376,18 @@ Rules 1–5 are about **what may be edited** and hold everywhere, forks included
 installs, sometimes a running hardware session). In your own fork it does not apply — work on a
 feature branch and open a PR, as [AGENTS.md](AGENTS.md) describes.
 
-1. **Do NOT edit vendored official files** (`calibrations/` non-graph files, `calibration_utils/`).
-   Change behavior in `scqo_qm/` instead, or update upstream and re-sync.
-2. **Editable code lives in:** `scqo_qm/`, `quam_config/`, `scripts/`,
-   `calibrations/offline_graph/`. Everything else is vendored, generated, or frozen.
-3. **Never touch the frozen archive** (`customized/`, `calibrations/exclude/`) — it exists for
-   history, not for running. It *is* packaged (`pyproject.toml` ships it so `exclude/` stays
-   importable), which is not permission to edit it.
+1. **Do NOT edit `scqo_qm/_vendored/`.** It is third-party code copied in byte-identical
+   (bar the one import line a moved file needs), with its licence and upstream commit beside
+   it and its contract pinned by `tests/test_lib_fetcher.py`. Change behavior in `scqo_qm/`
+   instead, or update upstream and re-copy.
+2. **Editable code lives in:** `scqo_qm/` (except `_vendored/`), `quam_config/`, `scripts/`.
+3. **The frozen qualibrate archive is GONE** — `calibrations/`, `calibration_utils/` and
+   `customized/` were deleted after v3.13.0, which is the tag that still carries them. Read
+   them there or in git history; do not restore them into the tree.
 4. **Skip `data/`** — data storage only, and gitignored, so a fresh clone has none.
 5. **No qualibrate nodes.** New experiments are fused files in `scqo_qm/experiments/`
-   (**Adding an experiment**); qualibrate scaffolding returns only on explicit request.
+   (**Adding an experiment**); qualibrate is not a dependency and scaffolding for it returns
+   only on explicit request.
 6. **In the maintainer's tree only:** present a plan and get the maintainer's approval before
    modifying code, call out any critical vendor dependency you add or change, and report
    working-tree/instruction conflicts before changing anything. Several agents share that tree

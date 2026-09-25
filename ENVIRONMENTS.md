@@ -14,7 +14,7 @@ The one line for this repo, so you cannot get it wrong by not clicking:
 
 **Never `uv run` here.** Its sync would rebuild the environment from `pyproject.toml` +
 `uv.lock`, displacing `requirements-qm.lock.txt` — this repo's pin authority for the whole
-`qm-qua → quam → qualibrate` stack, and the reason that lockfile exists.
+`qm-qua → quam` stack, and the reason that lockfile exists.
 
 **There is no repo-local venv for this repo.** A `scqo-qm/.venv` on disk is residue of a stray
 `uv run`: it resolves from `pyproject.toml` rather than the lockfile, and cannot run the suite.

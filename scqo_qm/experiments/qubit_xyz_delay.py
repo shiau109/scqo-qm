@@ -1,9 +1,9 @@
 """XY-Z delay acquisition probe: vendor code only (qm/quam) — no qualibrate, no
 scqo, no scqat.
 
-Adapted from the vendored official node ``16a_xyz_delay`` (its baker lives in
-``calibration_utils/xyz_delay/parameters.py``, which a probe may not import, so
-the ~30-line bake is reimplemented here). A fixed XY ``x180`` and a same-length Z
+Adapted from the official node ``16a_xyz_delay``, vendored in this repo until
+v3.13.0 (its baker lived in ``calibration_utils/xyz_delay/parameters.py``, which a
+probe may not import, so the ~30-line bake is reimplemented here). A fixed XY ``x180`` and a same-length Z
 (flux) rectangle are baked TOGETHER into one segment per relative shift: the Z
 waveform slides by ``i`` ns while the XY samples stay centred, so running segment
 ``i`` plays the two pulses offset by ``i - half_scan_ns`` ns. Sweeping the two

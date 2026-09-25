@@ -29,14 +29,13 @@ if TYPE_CHECKING:
 def build_backend(cfg: LabConfig, setup: dict, roster: "Roster") -> Backend:
     if setup.get("backend") != "qm":
         raise SystemExit(f"the qm driver serves backend 'qm', got {setup.get('backend')!r}")
-    # State-authority rule checked BEFORE loading QUAM: fail before any state file
-    # is touched. Forbidden while qualibrate nodes still write QUAM directly (see
-    # scqo-qm CLAUDE.md); the migration finish line is flipping this to "push".
-    if cfg.state_sync != "pull":
-        raise SystemExit(
-            'lab config sets state_sync != "pull" for the QM backend: forbidden while '
-            "official qualibrate nodes can still write QUAM (see scqo-qm CLAUDE.md)"
-        )
+    # No backend-local state_sync guard: this one said "forbidden while qualibrate
+    # nodes can still write QUAM", and those nodes are gone (last release carrying
+    # them: v3.13.0). The CORE refusal in scqo's make_session stays and is the only
+    # one, because its reason is a different and still-live one -- a push seeds the
+    # vendor config from scqo_state.json with no history rows and would clobber hand
+    # edits of it. Re-adding a second check here would just split that decision in
+    # two. SCQO BACKLOG F7 is the question of when the core one lifts.
     folder = Path(setup["instrument_config"])
     missing = [n for n in ("state.json", "wiring.json") if not (folder / n).is_file()]
     if missing:

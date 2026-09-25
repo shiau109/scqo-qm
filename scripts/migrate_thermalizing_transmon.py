@@ -4,7 +4,7 @@ scqo v0.14 owns the passive-reset wait as the neutral drive-channel knob
 ``thermalization_time_s``. QUAM's stock ``thermalization_time`` is a READ-ONLY
 derived property (``thermalization_time_factor * T1``), so an absolute wait has
 nowhere to live until a device's qubits name a class that stores one — see
-``customized/quam_builder/architecture/superconducting/qubit/thermalizing_transmon.py``.
+``scqo_qm/quam_builder/architecture/superconducting/qubit/thermalizing_transmon.py``.
 Until a config is migrated, ``scqo set <q>.thermalization_time_s=...`` raises
 NotImplementedError naming this script, and the derived factor*T1 keeps working.
 

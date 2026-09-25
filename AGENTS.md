@@ -11,10 +11,12 @@ Two products in one repo:
 1. **`scqo_qm/`** — the Quantum Machines OPX1000 backend for
    [SCQO](https://github.com/shiau109/SCQO), the vendor-neutral experiment API. Its Qblox
    sibling is [scqo-qblox](https://github.com/shiau109/scqo-qblox); never import from it.
-2. **Vendored official qualibrate calibrations** (`calibrations/` + `calibration_utils/`),
-   copied in by `sync_official.py`. Official nodes only.
+2. **Vendor operator tools** reached as `scqo-qm <command>` (`scqo_qm/cli.py`
+   dispatches from `fieldmap.OPERATOR_COMMANDS`). Not scqo subcommands.
 
-Vendor stack: **qm-qua → quam → qualibrate**.
+Vendor stack: **qm-qua → quam**. No qualibrate: the vendored GUI nodes were removed
+after v3.13.0, and the two `qualibration-libs` pieces this driver used are vendored
+under `scqo_qm/_vendored/` (BSD-3, upstream `09fc735`) rather than depended on.
 
 ## Setup — a standalone fork of this repo cannot install
 
@@ -64,10 +66,9 @@ alone leaves them stale.
    (probes that acquire inside `probe()`) and `tests/test_reset_method.py`'s `CARRIERS`
    (active-reset opt-in).
 6. May import `qm.qua` (the DSL star-import cannot be function-local), `quam`,
-   `qualang_tools`, `qualibration_libs.core`/`.data`, `scqo`. **Never** `qualibrate`,
-   **never** `scqat`.
-
-A qualibrate node is NOT part of adding an experiment — the GUI serves official nodes only.
+   `qualang_tools`, `scqo_qm._vendored.qualibration_libs`, `scqo`. **Never**
+   `qualibrate` or the installed `qualibration_libs` (neither is a dependency any
+   more), **never** `scqat`.
 
 ## Two invariants that fail SILENTLY
 
@@ -119,12 +120,12 @@ Full detail: [SCQO's CONTRIBUTING.md](https://github.com/shiau109/SCQO/blob/main
 
 ## Do not
 
-- **Do not edit vendored official files** (`calibrations/` non-graph files,
-  `calibration_utils/`). Change behavior in `scqo_qm/`, or update upstream and re-sync.
-- **Never touch the frozen archive** (`customized/`, `calibrations/exclude/`). It is
-  packaged so `exclude/` stays importable; that is not permission to edit it.
-- Editable code lives in `scqo_qm/`, `quam_config/`, `scripts/`,
-  `calibrations/offline_graph/`. Everything else is vendored, generated, or frozen.
+- **Do not edit `scqo_qm/_vendored/`.** It is a byte-identical copy of upstream
+  `qualibration-libs` (bar the one import line a moved file needs), pinned by
+  `tests/test_lib_fetcher.py`. Change behavior in `scqo_qm/`, or update upstream and
+  re-copy with its licence and commit.
+- Editable code lives in `scqo_qm/` (except `_vendored/`), `quam_config/` and
+  `scripts/`.
 - Do not rename or move the lab QUAM classes in `quam_builder/` or `components/` without
   a migration. They are persisted **by dotted path** in every `state.json`, and QUAM
   falls back to base classes silently on a missing import — never trust absence of error.

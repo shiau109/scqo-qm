@@ -66,9 +66,9 @@ def baked_waveform(baked_config, waveform_amp: float, qubit, max_length: int = 1
     Element ``i-1`` is an ``i`` ns constant pulse at ``waveform_amp`` volts on
     ``qubit.z``, registered as op ``flux_pulse{i}``. Mutates ``baked_config`` —
     that config is the one that must be executed (pass it to
-    ``acquire(..., config=baked_config)``). Copied from
-    ``calibration_utils.cryoscope.parameters.baked_waveform`` so this probe stays
-    free of qualibrate imports.
+    ``acquire(..., config=baked_config)``). Reimplemented from
+    ``calibration_utils.cryoscope.parameters.baked_waveform``, which this repo
+    vendored until v3.13.0, so this probe stays free of qualibrate imports.
     """
     pulse_segments = []
     waveform = [waveform_amp] * max_length

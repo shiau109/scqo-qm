@@ -53,9 +53,10 @@ GAIN_STEP_DB = 0.5
 
 #: Ceiling on the IF amplitude the OPX feeds the Octave (V) -- the OPX+ DAC rail.
 #: ``power_tools.set_output_power_iq_channel`` refuses outside [-0.5, 0.5) for the
-#: same reason, and ``quam_config/instrument_limits.py`` states the same number
-#: for an IQ channel (against 1.0 NORMALIZED for an MW one: the two families do
-#: not even share the unit).
+#: same reason. THE one home for this number: ``quam_config/instrument_limits.py``
+#: used to state it too, for the qualibrate nodes' waveform capping, and left with
+#: them. (An MW-FEM channel is bounded at 1.0 NORMALIZED instead -- the two families
+#: do not even share the unit, so the ceilings were never comparable.)
 MAX_IF_AMP_V = 0.5
 
 #: The up-conversion mixer's optimum drive (V), per

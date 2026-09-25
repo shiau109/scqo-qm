@@ -19,10 +19,12 @@ assets
 tempCodeRunnerFile.python
 temp/
 
-# Official qua-libs files are vendored (copied) into calibrations/ and
-# calibration_utils/ by sync_official.py and ARE tracked in git, so they are
-# intentionally NOT ignored here. Do not edit the vendored files in place;
-# update upstream and re-run `python sync_official.py`.
+# The Octave mixer-calibration database. quam writes it into the CURRENT WORKING
+# DIRECTORY whenever octaves.<name>.calibration_db_path is unset (the case
+# quam_fields.octave_calibration_warnings names), so running anything from the
+# repo root drops one here. It is a machine artifact, never repo content - one
+# was committed for years before the qualibrate removal noticed.
+calibration_db.json
 **/quam_state_6q
 # The OPX+/Octave tree is BUILT, not stored: scripts/make_opxp_fixture.py
 # is the tracked artifact, and the tests build into a tmp dir so a fresh

@@ -250,10 +250,9 @@ def test_backend_entry_point_resolves_and_guards_fire(tmp_path, roster):
     empty.mkdir()
     setup = {"backend": "qm", "instrument_config": str(empty)}
 
-    push_cfg = LabConfig(state_sync="push")
-    with pytest.raises(SystemExit, match="pull"):
-        factory(push_cfg, setup, roster)  # state-authority guard, before any file
-
+    # No state_sync check here any more: the backend-local guard's reason was the
+    # qualibrate nodes, and it left with them. scqo's make_session owns the one
+    # remaining refusal, for a different reason, and pins it in its own suite.
     pull_cfg = LabConfig(state_sync="pull")
     with pytest.raises(SystemExit, match="state.json"):
         factory(pull_cfg, setup, roster)  # canonical QUAM files required

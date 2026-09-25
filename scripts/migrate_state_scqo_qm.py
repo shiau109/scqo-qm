@@ -163,7 +163,9 @@ def main() -> None:
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--reverse", action="store_true",
-                    help="rollback: scqo_qm.* -> customized.* (run AFTER the code rollback)")
+                    help="rollback: scqo_qm.* -> customized.* — NO LONGER USABLE, the "
+                         "customized package was deleted after v3.13.0; only a checkout "
+                         "at that tag or earlier can load what this writes")
     ap.add_argument("--verify-only", action="store_true")
     ap.add_argument("--no-verify", action="store_true")
     ap.add_argument("--lenient-generate", action="store_true",

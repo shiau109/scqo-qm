@@ -1,7 +1,8 @@
 """Single-excitation flux-chevron acquisition probe: vendor code only (qm/quam) -
 no qualibrate, no scqo, no scqat.
 
-Adapted from `calibrations/19_chevron_11_02.py` (the two-qubit CZ chevron). The
+Adapted from the official qualibrate node `19_chevron_11_02.py` (the two-qubit CZ
+chevron), which this repo vendored until v3.13.0 -- read it there or upstream. The
 flux pulse still sweeps amplitude x duration on the control qubit's z line and
 both qubits are still read out, but only **one** qubit of the pair is excited with
 `x180` (selected by `drive_role`, default the control qubit) instead of preparing
@@ -233,8 +234,8 @@ def baked_waveform(qubit, baked_config, base_level: float = 0.5, max_samples: in
     (1..max_samples samples) at the specified base_level. Each baked pulse is registered
     as an operation named "flux_pulse{i}" on the provided qubit z line.
 
-    Copied from `calibration_utils.chevron_cz.parameters.baked_waveform` so this probe
-    stays free of qualibrate imports.
+    Reimplemented from `calibration_utils.chevron_cz.parameters.baked_waveform`, which
+    this repo vendored until v3.13.0, so this probe stays free of qualibrate imports.
 
     Returns a list of baking objects; index i corresponds to a pulse of i+1 samples.
     """
