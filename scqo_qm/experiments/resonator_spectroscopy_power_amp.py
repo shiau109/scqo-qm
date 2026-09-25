@@ -140,17 +140,17 @@ def acquire(
     prog,
     sweep_axes,
     *,
-    num_detuning_points: int,
+    num_amp_points: int,
     timeout: float,
     log: Optional[Callable] = None,
 ) -> xr.Dataset:
     """Connect to the QOP, execute the program and fetch the raw xr.Dataset.
 
-    The progress counter tracks the outer amplitude loop (``num_detuning_points``
-    is kept as the arg name for the qualibrate shell's call site; it is only the
-    progress-bar total).
+    The progress counter tracks the OUTER loop, which here is the amplitude sweep —
+    the argument was called ``num_detuning_points`` for the retired qualibrate
+    shell's call site, which is the axis it is not.
     """
-    return _acquire(machine, prog, sweep_axes, num_shots=num_detuning_points, timeout=timeout, log=log)
+    return _acquire(machine, prog, sweep_axes, num_shots=num_amp_points, timeout=timeout, log=log)
 
 
 from typing import Any

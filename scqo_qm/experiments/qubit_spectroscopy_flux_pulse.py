@@ -64,7 +64,6 @@ def build_program(
     dcs,
     operation: str,
     operation_len,
-    operation_amp: float,
     num_shots: int,
     z_source_qubit: Optional[str] = None,
     xy_source_qubit: Optional[str] = None,
@@ -164,9 +163,9 @@ def build_program(
                         # Apply the saturation drive: from each qubit, or a single xy source.
                         if xy_source is None:
                             for i, qubit in multiplexed_qubits.items():
-                                qubit.xy.play(operation, amplitude_scale=operation_amp, duration=operation_duration)
+                                qubit.xy.play(operation, amplitude_scale=1.0, duration=operation_duration)
                         else:
-                            xy_source.xy.play(operation, amplitude_scale=operation_amp, duration=operation_duration)
+                            xy_source.xy.play(operation, amplitude_scale=1.0, duration=operation_duration)
                         align()
 
                         # Readout every measured qubit's resonator.
@@ -234,7 +233,6 @@ class QMQubitSpectroscopyFluxPulse(QubitSpectroscopyFluxPulse):
             dcs=self.sweep_axes["flux_bias_v"],
             operation="saturation",
             operation_len=None,  # use each qubit's own saturation-pulse length
-            operation_amp=1.0,
             num_shots=self.params.num_averages,
             z_source_qubit=z_source,
             xy_source_qubit=None,  # None = every measured qubit drives its own xy line

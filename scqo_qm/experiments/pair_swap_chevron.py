@@ -16,13 +16,11 @@ The sub-4ns flux-pulse granularity uses the baking tool (`qualang_tools.bakery`)
 short segments (1..16 ns) are baked into the config, and longer pulses combine a
 baked tail with a dynamically stretched (multiple-of-4ns) `play`.
 
-Amplitude sweep (`amp_mode`), mirroring `pair_swap_flux_map`:
-  - "prefactor" (default, what the qualibrate node uses): the sweep values are a
-    unitless pre-factor on a base amplitude computed from QUAM as the |11>-|02>
-    resonance point of each pair.
-  - "absolute": the sweep values ARE the emitted flux-pulse amplitudes in volts.
-    The QUAM |11>-|02> formula is not consulted at all (it is meaningless when the
-    caller names volts, and a bring-up tree may not carry the fields it reads).
+The amplitude sweep is in VOLTS, mirroring `pair_swap_flux_map`: the sweep values
+ARE the emitted flux-pulse amplitudes. The QUAM |11>-|02> resonance formula is not
+consulted at all — it is meaningless when the caller names volts, and a bring-up
+tree may not carry the fields it reads. (The unitless pre-factor mode the retired
+qualibrate node used went with it; the last release carrying it is v3.13.0.)
 
 `flux_role` selects which qubit's z line carries the flux pulse; it defaults to
 the control qubit, which is what this probe used to hardwire.
@@ -45,9 +43,8 @@ inherited from ``scqo.experiments.PairSwapChevron``; the joint-population
 reduction comes from :class:`JointPopulationMixin`. scqo sweeps
 ``(flux_amp_v, swap_time_ns)`` in absolute volts and whole nanoseconds; the
 QM builder sweeps a QUA amplitude scale x a 1 ns-granular pulse duration
-(baked below 4 ns), so this adapter drives the probe in its ``amp_mode
-="absolute"`` mode and maps the neutral high/low roles onto the vendor's
-control/target. ``coupler_flux_v`` / ``swap_operation`` pass straight through:
+(baked below 4 ns), so this adapter maps the neutral high/low roles onto the
+vendor's control/target. ``coupler_flux_v`` / ``swap_operation`` pass straight through:
 when the first is set the builder also plays that macro's coupler pulse at that
 fixed amplitude and the baking branch is not built, which is why scqo puts the
 duration axis on the 4 ns grid for those runs.
@@ -60,7 +57,6 @@ fetch path would regenerate a config without them.
 
 from __future__ import annotations
 
-import warnings
 from typing import Callable, Optional
 
 import numpy as np
@@ -77,10 +73,8 @@ from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._flux_limits import (
     check_flux_pulse_relative,
-    dac_rail_v,
     declared_idle_offset_v,
     flux_reference_amplitude,
-    rail_remedy,
 )
 
 
@@ -89,7 +83,7 @@ def _flux_qubit(qp, flux_role: str):
     return qp.qubit_target if flux_role == "target" else qp.qubit_control
 
 
-def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str):
+def resolve_amplitudes(qubit_pairs, amplitudes, *, flux_role: str):
     """Resolve the amplitude sweep into what the QUA program actually needs.
 
     Returns `(qua_amps, base_levels, denoms)`:
@@ -101,14 +95,10 @@ def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str
 
     Both QUA branches emit `base_level * qua_amp` volts -- the baked branch scales
     the baked waveform directly, the play branch plays `const` at
-    `(base_level/denom) * qua_amp`. That equality is the invariant every mode has
-    to preserve, and it is what `tests/test_pair_swap_probes.py` pins.
+    `(base_level/denom) * qua_amp`. That equality is the invariant this function
+    has to preserve, and it is what `tests/test_pair_swap_probes.py` pins.
 
-    In "prefactor" mode `base_level` is the per-pair QUAM |11>-|02> amplitude and
-    `qua_amps` is the sweep verbatim -- the same numbers this probe has always
-    played, so the qualibrate node is unchanged (what is new there is that the
-    degenerate cases refuse by name instead of by ZeroDivisionError). In
-    "absolute" mode the sweep is volts: one
+    The sweep is volts: one
     reference `amp_ref = max|amplitudes|` becomes the baked level for every pair
     and `qua_amps = amplitudes / amp_ref`, so the emitted volts equal the swept
     value on both branches. The reference must be a SCALAR because
@@ -119,8 +109,6 @@ def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str
 
     Pure: no QUA, no config, no baking -- callable from a test with stub pairs.
     """
-    if amp_mode not in ("absolute", "prefactor"):
-        raise ValueError(f"amp_mode must be 'absolute' or 'prefactor', got {amp_mode!r}")
     if flux_role not in ("control", "target"):
         raise ValueError(f"flux_role must be 'control' or 'target', got {flux_role!r}")
 
@@ -132,7 +120,6 @@ def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str
     # >16 ns branch stretches. `flux_reference_amplitude` enforces the rail/2
     # convention on it (the rail being PER PORT, direct 0.5 V vs amplified 2.5 V).
     denoms = {}
-    rails = {}
     for qp in qubit_pairs:
         fq = _flux_qubit(qp, flux_role)
         if fq.z is None:
@@ -144,95 +131,32 @@ def resolve_amplitudes(qubit_pairs, amplitudes, *, amp_mode: str, flux_role: str
                 f"z line of {fq.name} has no operation 'const'; available: {list(fq.z.operations)}"
             )
         denoms[qp.name] = flux_reference_amplitude(fq.z, name=fq.name, operation="const")
-        rails[qp.name] = dac_rail_v(fq.z)
 
-    if amp_mode == "absolute":
-        amp_ref = float(np.max(np.abs(amplitudes)))
-        if amp_ref == 0.0:
-            raise ValueError(
-                "an all-zero absolute amplitude sweep has no reference to bake against; "
-                "widen the window or use amp_mode='prefactor'."
-            )
-        for qp in qubit_pairs:
-            z = _flux_qubit(qp, flux_role).z
-            check_flux_pulse_relative(
-                z, name=f"{qp.name} absolute flux sweep on {_flux_qubit(qp, flux_role).name}.z",
-                idle_v=declared_idle_offset_v(z), amps_v=amplitudes, operation="const")
-        base_levels = {qp.name: amp_ref for qp in qubit_pairs}
-        qua_amps = amplitudes / amp_ref
-    else:
-        # The flux-pulse base amplitude that brings |11> into resonance with |02> for each pair.
-        base_levels = {}
-        for qp in qubit_pairs:
-            detuning = (qp.qubit_control.xy.RF_frequency - qp.qubit_target.xy.RF_frequency
-                        - qp.qubit_target.anharmonicity)
-            quad = float(qp.qubit_control.freq_vs_flux_01_quad_term or 0.0)
-            with np.errstate(invalid="ignore", divide="ignore"):
-                level = float(np.sqrt(-detuning / quad)) if quad else float("nan")
-            if not np.isfinite(level) or level <= 0.0:
-                # The pre-factor sweep is defined RELATIVE to this level, so a
-                # chip whose quad term is unmeasured (0/None) or whose detuning
-                # has the wrong sign has nothing for it to be a factor OF. This
-                # used to be a bare ZeroDivisionError (quad 0), a TypeError
-                # (quad None) or a baked NaN waveform (wrong sign) -- and it is
-                # the state 7 of the 9 live chipA pairs are actually in.
-                raise ValueError(
-                    f"{qp.name}: the |11>-|02> base amplitude is not a usable level "
-                    f"({level}). It is sqrt(-detuning / freq_vs_flux_01_quad_term) with "
-                    f"detuning = {detuning:.4g} Hz and "
-                    f"freq_vs_flux_01_quad_term = {quad:.4g} — measure the control qubit's "
-                    f"flux arch (qubit_spectroscopy_flux_pulse) to fill the quad term in, or "
-                    f"sweep volts directly with amp_mode='absolute', which does not use it."
-                )
-            base_levels[qp.name] = level
-        qua_amps = amplitudes
-        for qp in qubit_pairs:
-            level = base_levels[qp.name]
-            if abs(level) >= rails[qp.name]:
-                # WARN, not raise: this level is computed from the chip's own
-                # |11>-|02> detuning, and a real chip can legitimately land above
-                # the rail. Raising here would break the qualibrate node on a
-                # config that has always "worked" -- silently clipped.
-                z = _flux_qubit(qp, flux_role).z
-                warnings.warn(
-                    f"{qp.name}: the |11>-|02> base amplitude is {level} V, at or past "
-                    f"the port's {rails[qp.name]} V full scale. The baked waveform peak is "
-                    f"clipped on hardware and the simulator hides it -- sweep in volts "
-                    f"(amp_mode='absolute') below the rail instead. "
-                    + rail_remedy(z, name=f"{qp.name} base amplitude",
-                                  needed_v=abs(level), rail=rails[qp.name]),
-                    RuntimeWarning, stacklevel=2)
-
-    # One baked op set per flux ELEMENT (baking files its pulses and waveforms
-    # under the z element's own name -- `<element>_baked_pulse_<i>`), so two
-    # pairs sharing a flux qubit at DIFFERENT base levels would silently
-    # overwrite each other's waveforms in the shared config.
-    per_element = {}
-    for qp in qubit_pairs:
-        element = _flux_qubit(qp, flux_role).z.name
-        seen = per_element.setdefault(element, (qp.name, base_levels[qp.name]))
-        if seen[0] != qp.name and seen[1] != base_levels[qp.name]:
-            raise ValueError(
-                f"pairs {seen[0]} and {qp.name} share the flux element {element!r} but need "
-                f"different baked base levels ({seen[1]} V vs {base_levels[qp.name]} V); the "
-                f"baked flux_pulse ops would overwrite each other. Run these pairs separately."
-            )
-
-    max_qua = float(np.max(np.abs(qua_amps)))
-    if max_qua >= MAX_AMP_SCALE:
+    amp_ref = float(np.max(np.abs(amplitudes)))
+    if amp_ref == 0.0:
         raise ValueError(
-            f"amplitude sweep exceeds QUA's amplitude_scale range: max |a| = {max_qua:.3f} "
-            f">= {MAX_AMP_SCALE} (the baked pulse is scaled by this value directly)."
+            "an all-zero amplitude sweep has no reference to bake against; "
+            "widen the window."
         )
     for qp in qubit_pairs:
-        play_scale = abs(base_levels[qp.name] / denoms[qp.name]) * max_qua
-        if play_scale >= MAX_AMP_SCALE:
-            raise ValueError(
-                f"flux sweep for {qp.name} exceeds QUA's amplitude_scale range on the >16 ns "
-                f"branch: max |(base/const)*a| = {play_scale:.3f} >= {MAX_AMP_SCALE} "
-                f"(base = {base_levels[qp.name]} V, const = {denoms[qp.name]} V). "
-                f"Reduce the amplitude range or raise the 'const' op amplitude."
-            )
+        z = _flux_qubit(qp, flux_role).z
+        check_flux_pulse_relative(
+            z, name=f"{qp.name} flux sweep on {_flux_qubit(qp, flux_role).name}.z",
+            idle_v=declared_idle_offset_v(z), amps_v=amplitudes, operation="const")
+    base_levels = {qp.name: amp_ref for qp in qubit_pairs}
+    qua_amps = amplitudes / amp_ref
+
+    # THREE guards left with the pre-factor mode rather than being kept as
+    # defence in depth, because none of them could fire any more, and a check
+    # that cannot fire is the defect BACKLOG I17 is about:
+    #   * two pairs on one flux ELEMENT needing different baked levels -- the
+    #     baked level is now ONE shared reference, so they cannot differ;
+    #   * `max|qua_amps| >= MAX_AMP_SCALE` -- qua_amps is
+    #     `amplitudes / max|amplitudes|`, so its maximum is exactly 1.0;
+    #   * the >16 ns branch's `amp_ref/const >= MAX_AMP_SCALE` -- that is
+    #     `peak/reference` against the same stored `const` op, which
+    #     `check_flux_pulse_relative` above already refuses, FIRST and with the
+    #     reachable excursion spelled out.
     return qua_amps, base_levels, denoms
 
 
@@ -334,7 +258,6 @@ def build_program(
     num_shots: int,
     reset_type: str,
     use_state_discrimination: bool,
-    amp_mode: str = "prefactor",
     flux_role: str = "control",
     drive_role: str = "control",
     coupler_amp: Optional[float] = None,
@@ -347,9 +270,8 @@ def build_program(
     the baked flux-pulse operations and MUST be the config used to execute (pass it to
     `acquire(..., config=baked_config)`); a freshly generated config would lack them.
 
-    `amplitudes` is the flux-pulse amplitude sweep -- a unitless pre-factor centred on
-    1.0 when `amp_mode="prefactor"` (the default), or absolute volts when
-    `amp_mode="absolute"` (see the module docstring and `resolve_amplitudes`).
+    `amplitudes` is the flux-pulse amplitude sweep, in absolute volts (see the module
+    docstring and `resolve_amplitudes`).
     `times_cycles` is the pulse-duration sweep in ns; `qubit_pairs` is a BatchableList
     of qubit pairs (`qubit_pairs.batch()` / `.get_names()`). `flux_role` selects which
     qubit of each pair carries the flux pulse and `drive_role` which receives the x180
@@ -365,7 +287,7 @@ def build_program(
     num_qubit_pairs = len(qubit_pairs)
 
     qua_amps, base_levels, denoms = resolve_amplitudes(
-        qubit_pairs, amplitudes, amp_mode=amp_mode, flux_role=flux_role
+        qubit_pairs, amplitudes, flux_role=flux_role
     )
     coupler_plays = resolve_coupler_plays(
         qubit_pairs, coupler_amp, swap_operation, times_cycles)
@@ -375,8 +297,7 @@ def build_program(
         # the axis carries what the CALLER swept, not the QUA scale factor
         "amplitude": xr.DataArray(
             np.asarray(amplitudes, dtype=float),
-            attrs={"long_name": "amplitudes of the flux pulse",
-                   "units": "V" if amp_mode == "absolute" else "prefactor"},
+            attrs={"long_name": "amplitudes of the flux pulse", "units": "V"},
         ),
         "time": xr.DataArray(times_cycles, attrs={"long_name": "pulse duration", "units": "ns"}),
     }
@@ -628,7 +549,6 @@ class QMPairSwapChevron(JointPopulationMixin, PairSwapChevron):
             num_shots=self.params.num_averages,
             reset_type=check_reset_method(self),
             use_state_discrimination=True,
-            amp_mode="absolute",
             flux_role=flux_role,
             drive_role=drive_role,
             coupler_amp=self.params.coupler_flux_v,

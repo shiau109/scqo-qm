@@ -456,7 +456,6 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     dfs=dfs,
                     operation="saturation",
                     operation_len=operation_len,
-                    operation_amp=1.0,
                     num_shots=num_shots,
                     reset_type=reset_type,
                 )

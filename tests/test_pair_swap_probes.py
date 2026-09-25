@@ -7,10 +7,9 @@ volts, or the map has a step in it at 17 ns that no fit would flag. That equalit
 is pure arithmetic over the resolved amplitudes, so it is pinned here against
 stub pairs — no QOP, no config, no baking.
 
-``amp_mode="prefactor"`` is what the qualibrate node
-(``calibrations/LCH_pair_qq_chevron.py``) uses and must stay byte-identical;
-``amp_mode="absolute"`` is what scqo's ``pair_swap_chevron`` drives, where the
-sweep values ARE the emitted volts.
+The sweep values ARE the emitted volts. (The unitless pre-factor mode the
+retired qualibrate node used went with it at the qualibrate removal; the last
+release carrying it is v3.13.0.)
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ def test_absolute_mode_emits_the_swept_volts_on_both_branches():
     amps = np.array([0.05, 0.1, 0.2])
     pairs = [_pair(ctrl_amp=0.25)]
     qua_amps, base_levels, denoms = resolve_amplitudes(
-        pairs, amps, amp_mode="absolute", flux_role="control")
+        pairs, amps, flux_role="control")
 
     baked, play = _emitted(base_levels["p1"], qua_amps, denoms["p1"])
     np.testing.assert_allclose(baked, amps)
@@ -92,7 +91,7 @@ def test_absolute_mode_never_reads_the_quam_physics_fields():
     not have them — so absolute mode must not consult them at all."""
     pairs = [_pair(physics=False)]  # the stub has neither attribute
     qua_amps, _, _ = resolve_amplitudes(
-        pairs, np.array([0.1, 0.2]), amp_mode="absolute", flux_role="control")
+        pairs, np.array([0.1, 0.2]), flux_role="control")
     assert qua_amps.size == 2
 
 
@@ -103,7 +102,7 @@ def test_absolute_mode_uses_one_scalar_reference_for_every_pair():
     pairs = [_pair("p1", ctrl_amp=0.25), _pair("p2", ctrl_amp=0.1)]
     amps = np.array([0.05, 0.15])
     _, base_levels, denoms = resolve_amplitudes(
-        pairs, amps, amp_mode="absolute", flux_role="control")
+        pairs, amps, flux_role="control")
     assert base_levels["p1"] == base_levels["p2"] == pytest.approx(0.15)
     assert denoms["p1"] != denoms["p2"]
 
@@ -111,7 +110,7 @@ def test_absolute_mode_uses_one_scalar_reference_for_every_pair():
 def test_absolute_sweep_above_the_dac_rail_is_refused():
     with pytest.raises(ValueError, match="full scale"):
         resolve_amplitudes([_pair()], np.array([0.1, 0.6]),
-                           amp_mode="absolute", flux_role="control")
+                           flux_role="control")
 
 
 # ---------------------------------------------------------------- the rail itself
@@ -132,113 +131,50 @@ def test_amplified_ports_accept_the_live_chip_amplitudes():
     amps = np.array([0.5, 1.0])
     amplified = [_pair(ctrl_amp=1.25, output_mode="amplified")]
     qua_amps, base_levels, denoms = resolve_amplitudes(
-        amplified, amps, amp_mode="absolute", flux_role="control")
+        amplified, amps, flux_role="control")
     np.testing.assert_allclose(base_levels["p1"] * qua_amps, amps)
     assert denoms["p1"] == pytest.approx(1.25)
 
     with pytest.raises(ValueError, match="full scale"):
         resolve_amplitudes([_pair(ctrl_amp=1.25, output_mode="direct")], amps,
-                           amp_mode="absolute", flux_role="control")
+                           flux_role="control")
 
 
 def test_all_zero_absolute_sweep_is_refused():
     with pytest.raises(ValueError, match="no reference"):
         resolve_amplitudes([_pair()], np.zeros(3),
-                           amp_mode="absolute", flux_role="control")
+                           flux_role="control")
 
 
-# ----------------------------------------------------------------- prefactor mode
-
-def test_prefactor_mode_is_unchanged_from_the_qualibrate_path():
-    """The node's own behaviour: `a` reaches QUA verbatim and the baked level is
-    the QUAM |11>-|02> amplitude ``sqrt(-detuning / quad_term)``."""
-    amps = np.arange(0.8, 1.2, 0.01)
-    pairs = [_pair(physics=True)]
-    qua_amps, base_levels, denoms = resolve_amplitudes(
-        pairs, amps, amp_mode="prefactor", flux_role="control")
-
-    detuning = 5.1e9 - 4.8e9 - (-0.2e9)
-    expected = float(np.sqrt(-detuning / -3e9))
-    assert base_levels["p1"] == pytest.approx(expected)
-    np.testing.assert_allclose(qua_amps, amps)
-    # and both branches still agree with each other
-    baked, play = _emitted(base_levels["p1"], qua_amps, denoms["p1"])
-    np.testing.assert_allclose(baked, play)
-
-
-@pytest.mark.parametrize("quad,why", [(0.0, "unmeasured"), (3e9, "wrong sign")])
-def test_prefactor_mode_refuses_an_unusable_base_level(quad, why):
-    """The pre-factor sweep is defined RELATIVE to the |11>-|02> amplitude, so a
-    chip whose freq_vs_flux_01_quad_term is 0/None (flux arch never measured —
-    7 of the 9 live chipA pairs) has nothing for it to be a factor OF. The old
-    code raised a bare ZeroDivisionError or baked a NaN waveform; say what is
-    missing and name the way out instead."""
-    with pytest.raises(ValueError, match="not a usable level"):
-        resolve_amplitudes([_pair(physics=True, quad=quad)], np.array([1.0]),
-                           amp_mode="prefactor", flux_role="control")
-
-
-def test_absolute_mode_runs_where_prefactor_cannot():
-    """...and that way out is absolute volts, which never reads the quad term."""
+def test_the_quam_physics_fields_are_never_consulted():
+    """A chip whose freq_vs_flux_01_quad_term was never measured (7 of the 9 live
+    chipA pairs) still resolves: the |11>-|02> formula that needed it left with the
+    pre-factor mode, and the baked level is read off the sweep itself."""
     pairs = [_pair(physics=True, quad=0.0)]
     _, base_levels, _ = resolve_amplitudes(pairs, np.array([0.1, 0.2]),
-                                           amp_mode="absolute", flux_role="control")
+                                           flux_role="control")
     assert base_levels["p1"] == pytest.approx(0.2)
-
-
-def test_one_pair_is_never_reported_as_colliding_with_itself():
-    """Regression: the shared-flux-element guard compared each pair against the
-    entry it had just inserted, and a NaN base level is != itself — so a single
-    pair reported 'pairs X and X share the flux element'."""
-    _, base_levels, _ = resolve_amplitudes([_pair(physics=True)], np.array([1.0]),
-                                           amp_mode="prefactor", flux_role="control")
-    assert set(base_levels) == {"p1"}
-
-
-def test_prefactor_mode_warns_above_the_rail_rather_than_refusing():
-    """The base level is computed from the CHIP's own detuning and a real chip
-    can legitimately land above the rail. Raising would break the qualibrate
-    node on a config that has always 'worked' — silently clipped — so warn."""
-    pairs = [_pair(physics=True, quad=-1e9)]  # -> base 0.707 V, above the rail
-    with pytest.warns(RuntimeWarning, match="full scale"):
-        _, base_levels, _ = resolve_amplitudes(
-            pairs, np.array([0.1, 0.2]), amp_mode="prefactor", flux_role="control")
-    assert base_levels["p1"] > _DAC_RAIL
 
 
 # ----------------------------------------------------------------------- guards
 
-def test_const_op_above_the_dac_rail_is_refused_in_both_modes():
-    for mode, amps in (("absolute", np.array([0.1])), ("prefactor", np.array([1.0]))):
-        with pytest.raises(ValueError, match="full scale"):
-            resolve_amplitudes([_pair(ctrl_amp=0.5, physics=True)], amps,
-                               amp_mode=mode, flux_role="control")
-
-
-def test_prefactor_sweep_outside_the_qua_amplitude_range_is_refused():
-    with pytest.raises(ValueError, match="amplitude_scale range"):
-        resolve_amplitudes([_pair(physics=True)], np.array([1.0, 2.5]),
-                           amp_mode="prefactor", flux_role="control")
+def test_const_op_above_the_dac_rail_is_refused():
+    with pytest.raises(ValueError, match="full scale"):
+        resolve_amplitudes([_pair(ctrl_amp=0.5, physics=True)], np.array([0.1]),
+                           flux_role="control")
 
 
 def test_play_branch_scale_outside_the_qua_range_is_refused():
-    """The >16 ns branch scales `const` by base/const, which can blow the (-2, 2)
-    fixed-point range even when the baked scale is fine."""
-    with pytest.raises(ValueError, match="16 ns branch"):
-        resolve_amplitudes([_pair(ctrl_amp=0.01, physics=True)], np.array([1.0]),
-                           amp_mode="prefactor", flux_role="control")
+    """The >16 ns branch scales `const` by amp_ref/const, which can blow the (-2, 2)
+    fixed-point range even when the sweep itself sits well inside the rail: 0.1 V
+    asked of a `const` op baked at 0.01 V needs a scale of 10.
 
-
-def test_pairs_sharing_a_flux_element_at_different_levels_are_refused():
-    """Baking registers `flux_pulse{i}` under the z ELEMENT's own name, so two
-    pairs on one flux line at different base levels would silently overwrite
-    each other's waveforms in the shared config."""
-    shared = ("shared_z", "t_z")
-    pairs = [_pair("p1", physics=True, quad=-3e9, z_names=shared),
-             _pair("p2", physics=True, quad=-4e9, z_names=shared)]
-    with pytest.raises(ValueError, match="share the flux element"):
-        resolve_amplitudes(pairs, np.array([1.0]),
-                           amp_mode="prefactor", flux_role="control")
+    The refusal comes from the shared volts helper rather than a second check of
+    its own — `peak/reference` IS `amp_ref/const` — so it names the reachable
+    excursion, which the chevron's own message never did."""
+    with pytest.raises(ValueError, match="outside QUA's"):
+        resolve_amplitudes([_pair(ctrl_amp=0.01, physics=True)], np.array([0.1]),
+                           flux_role="control")
 
 
 def test_flux_role_selects_which_member_carries_the_pulse():
@@ -246,7 +182,7 @@ def test_flux_role_selects_which_member_carries_the_pulse():
     assert _flux_qubit(qp, "control") is qp.qubit_control
     assert _flux_qubit(qp, "target") is qp.qubit_target
     _, _, denoms = resolve_amplitudes([qp], np.array([0.05]),
-                                      amp_mode="absolute", flux_role="target")
+                                      flux_role="target")
     assert denoms["p1"] == pytest.approx(0.1)  # the TARGET's const op
 
 
@@ -255,7 +191,7 @@ def test_a_member_without_a_z_line_is_refused_by_name():
     qp.qubit_target.z = None
     with pytest.raises(ValueError, match="has no z line"):
         resolve_amplitudes([qp], np.array([0.05]),
-                           amp_mode="absolute", flux_role="target")
+                           flux_role="target")
 
 
 def test_a_missing_const_operation_lists_what_is_available():
@@ -263,22 +199,18 @@ def test_a_missing_const_operation_lists_what_is_available():
     qp.qubit_control.z.operations = {"flattop_cosine": SimpleNamespace(amplitude=0.2)}
     with pytest.raises(ValueError, match="flattop_cosine"):
         resolve_amplitudes([qp], np.array([0.05]),
-                           amp_mode="absolute", flux_role="control")
+                           flux_role="control")
 
 
-@pytest.mark.parametrize("kwargs,match", [
-    ({"amp_mode": "volts", "flux_role": "control"}, "amp_mode"),
-    ({"amp_mode": "absolute", "flux_role": "high"}, "flux_role"),
-])
-def test_bad_mode_names_are_refused(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        resolve_amplitudes([_pair()], np.array([0.1]), **kwargs)
+def test_a_bad_flux_role_is_refused():
+    with pytest.raises(ValueError, match="flux_role"):
+        resolve_amplitudes([_pair()], np.array([0.1]), flux_role="high")
 
 
 def test_empty_sweep_is_refused():
     with pytest.raises(ValueError, match="empty"):
         resolve_amplitudes([_pair()], np.array([]),
-                           amp_mode="absolute", flux_role="control")
+                           flux_role="control")
 
 
 # --------------------------------------------------------------------------

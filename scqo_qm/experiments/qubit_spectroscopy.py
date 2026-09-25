@@ -52,8 +52,9 @@ same Parameters mean.
 Drive power contract: the core ``run()`` already solved the drive chain for
 ``drive_power_dbm`` (recorded set -> acquire -> revert), parking the exact
 amplitude on the saturation op — so the probe plays it at ``amplitude_scale=1.0``
-(exact in QUA fixed point). The shared probe keeps its ``operation_amp`` argument
-for the qualibrate node, a separate consumer with its own explicit amps.
+(exact in QUA fixed point). That 1.0 is a LITERAL rather than a dropped keyword:
+omitting `amplitude_scale` emits different QUA, and this probe's generated script
+is pinned.
 """
 
 from __future__ import annotations
@@ -89,7 +90,6 @@ def build_program(
     dfs,
     operation: str,
     operation_len,
-    operation_amp: float,
     num_shots: int,
     reset_type: str,
     reset_max_attempts: int = 15,
@@ -101,10 +101,8 @@ def build_program(
 
     `dfs` is the drive-detuning sweep in Hz; `qubits` is a BatchableList (see
     `_lib.select_qubits`). When `drive_qubit` is None every qubit is driven;
-    otherwise only that qubit plays the drive. `operation_len` (ns) overrides the
-    operation's configured length when not None — the scqo path always passes a
-    number (the drive length is a Parameter), so the fallback is there for the
-    qualibrate node, which is a separate consumer with its own inputs.
+    otherwise only that qubit plays the drive. `operation_len` (ns) is the played
+    drive length; the drive length is a Parameter, so it is always a number.
 
     The ``align()`` between the drive block and the measurement block is the
     sequence: the drive is over before the readout tone starts, which is what
@@ -137,14 +135,13 @@ def build_program(
 
                     for i, qubit in multiplexed_qubits.items():
                         if drive_qubit is None or qubit.name == drive_qubit:
-                            # Get the duration of the operation from the node parameters or the state
-                            duration = operation_len if operation_len is not None else qubit.xy.operations[operation].length
+                            duration = operation_len
                             # Update the qubit frequency
                             qubit.xy.update_frequency(df + qubit.xy.intermediate_frequency)
                             # Play the saturation pulse
                             qubit.xy.play(
                                 operation,
-                                amplitude_scale=operation_amp,
+                                amplitude_scale=1.0,
                                 duration=duration // 4,
                             )
                     align()
@@ -173,7 +170,6 @@ def build_overlap_program(
     dfs,
     operation: str,
     drive_len_ns,
-    operation_amp: float,
     acq_lead_ns,
     drive_lead_ns,
     readout_lead_ns,
@@ -255,7 +251,7 @@ def build_overlap_program(
                         # the saturation drive, on its own element's timeline
                         qubit.xy.play(
                             operation,
-                            amplitude_scale=operation_amp,
+                            amplitude_scale=1.0,
                             duration=drive_cycles,
                         )
                         # readout the resonator (the ADC opens here, acq_lead_ns
@@ -327,7 +323,6 @@ class QMQubitSpectroscopy(QubitSpectroscopy):
                 dfs=self.sweep_axes["detuning_hz"],
                 operation="saturation",
                 operation_len=int(self.params.drive_len_ns),
-                operation_amp=1.0,  # run() parked the exact amplitude on the saturation op
                 num_shots=self.params.num_averages,
                 reset_type=reset_type,
                 reset_max_attempts=reset_max_attempts(self),
@@ -361,7 +356,6 @@ class QMQubitSpectroscopy(QubitSpectroscopy):
             dfs=self.sweep_axes["detuning_hz"],
             operation="saturation",
             drive_len_ns=window.drive_len_ns,
-            operation_amp=1.0,  # run() parked the exact amplitude on the saturation op
             acq_lead_ns=window.acq_start_ns,
             drive_lead_ns=window.drive_lead_ns,
             readout_lead_ns=window.readout_lead_ns,

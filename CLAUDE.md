@@ -219,10 +219,10 @@ is silent in both directions. Couplers name their points `off`/`on` but their at
 RF while `drive_freq_hz` reads f_01; fix by editing state.json, since `scqo set` goes through the
 same factory) — run once from `scqo_backend.py`.
 
-**Flux-amplitude sweeps: absolute volts or prefactor.** Both pair swap experiments take
-`amp_mode="absolute"|"prefactor"` (+ `flux_role`). scqo drives them `"absolute"` (the swept
-values ARE the emitted volts). Prefactor mode needs `freq_vs_flux_01_quad_term` (7 of 9 live
-chipA pairs have it unset — refused naming the field). The chevron's two QUA branches (baked
+**Flux-amplitude sweeps are ABSOLUTE VOLTS.** Both pair swap experiments sweep the emitted
+volts (+ `flux_role`); the unitless `amp_mode="prefactor"` alternative left with qualibrate,
+and with it the `freq_vs_flux_01_quad_term` dependency that 7 of 9 live chipA pairs could not
+satisfy (last release carrying it: v3.13.0). The chevron's two QUA branches (baked
 below 17 ns, stretched `const` above) must emit the same volts — `resolve_amplitudes` is pure and
 pinned by `tests/test_pair_swap_probes.py`. The partial-swap workflow is SCQO TUTORIAL §12.
 

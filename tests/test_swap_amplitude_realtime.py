@@ -222,7 +222,7 @@ def test_pair_swap_flux_map_divides_ahead_of_the_swap(machine, pair, via_macro):
         machine, select_qubit_pairs(machine, [PAIR]),
         coupler_amplitudes=np.linspace(-0.02, 0.02, 5),
         qubit_amplitudes=np.linspace(0.0, 0.02, 5),
-        flux_time=None if via_macro else 44, amp_mode="absolute",
+        flux_time=None if via_macro else 44,
         num_shots=10, reset_type="thermal", use_state_discrimination=True,
         swap_via_macro=via_macro, swap_operation=SWAP)
     script = _script(machine, prog)
@@ -257,7 +257,7 @@ def test_pair_swap_chevron_plays_plain_scales(machine, pair, square_swap, couple
         amplitudes=np.linspace(0.01, 0.05, 5),
         times_cycles=np.array([16, 20, 24, 28, 32]) if coupled else np.arange(1, 33),
         num_shots=10, reset_type="thermal", use_state_discrimination=True,
-        amp_mode="absolute", **extra)
+        **extra)
     script = _script(machine, prog, config)
     assert_plain_plays(script, "pair_swap_chevron")
     assert re.search(r"assign\(v\d+, \(-?[\d.e-]+\*v\d+\)\)", script), \
