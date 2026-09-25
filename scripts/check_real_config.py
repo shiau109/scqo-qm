@@ -41,7 +41,8 @@ def main() -> int:
     print("   real data_root are NOT touched; real measurements use `scqo run`)")
 
     try:
-        from quam_config import Quam
+        from quam_config import Quam  # noqa: F401 — probe: this repo's QUAM class
+        from scqo_qm.quam_io import load_state, save_state
     except ModuleNotFoundError as err:
         raise SystemExit(
             f"missing package: {err.name}\n"
@@ -49,7 +50,7 @@ def main() -> int:
             "Run it in the lab's QM environment: D:\github\.venv-qm"
         )
 
-    machine = Quam.load(str(work))
+    machine = load_state(work)
     print(f"[1/5] loaded QUAM | qubits: {list(machine.qubits)}")
 
     import scqo_qm.experiments  # noqa: F401
@@ -130,8 +131,8 @@ def main() -> int:
         failures.append("writeback")
 
     saved = work / "saved_state"
-    machine.save(path=saved)  # explicit scratch path ONLY — never the default quam_state
-    reloaded = Quam.load(str(saved))
+    save_state(machine, str(saved))  # explicit scratch path ONLY - never a setup's own
+    reloaded = load_state(saved)
     dm2 = QMDeviceModel(reloaded, roster)
     round_trip = all(
         abs(dm2.snapshot()[f"{q}_ro"]["readout_freq_hz"]

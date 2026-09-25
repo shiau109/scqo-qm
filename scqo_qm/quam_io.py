@@ -26,6 +26,19 @@ from typing import Any
 INCLUDE_DEFAULTS = True
 
 
+def load_state(path: str) -> Any:
+    """Load the QUAM tree in ``path`` — the folder, always named.
+
+    ``Quam.load()`` with no argument resolves through ``QUAM_STATE_PATH`` and then
+    qualibrate's ``[quam] state_path``, so a bare load reads whichever tree those
+    happen to name — on a machine whose repos have moved, one nobody else loads. The
+    folder a session works on is a fact of its setup, so it is passed, never resolved.
+    """
+    from quam_config import Quam  # lazy: keep this module import-light
+
+    return Quam.load(str(path))
+
+
 def save_state(machine: Any, path: str | None = None) -> None:
     """Save ``machine`` to ``path`` without consulting any qualibrate configuration.
 

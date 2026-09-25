@@ -30,6 +30,25 @@ from types import SimpleNamespace
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def hide_the_qualibrate_config(monkeypatch, tmp_path_factory):
+    """No test may read ``~/.qualibrate/config.toml`` — not even indirectly.
+
+    QUAM resolves two things through that file when it is not told them: where a bare
+    save writes, and whether default-valued fields are written at all (issue #38). A
+    machine that runs the qualibrate GUI has the file, so a suite that silently leans
+    on it passes here and fails on a fresh machine - which is exactly how #38 reached
+    an operator. Pointing ``QUAM_CONFIG_FILE`` at a path that does not exist makes
+    every lookup fail, so anything still leaning on one fails HERE.
+
+    Not ``HOME``: ``qualibrate_config`` computes its directory at import, so moving
+    ``HOME`` afterwards changes nothing. ``tests/test_quam_save_hermetic.py`` asserts
+    the lookup really does raise under this fixture, so it cannot pass vacuously.
+    """
+    missing = tmp_path_factory.getbasetemp() / "no-qualibrate" / "config.toml"
+    monkeypatch.setenv("QUAM_CONFIG_FILE", str(missing))
+
 #: The fixture chip in the greenfield schema: ONE multiplexed feedline (the
 #: readout riders mint q1_res/q1_ro, ...), a drive wire per qubit, a flux wire
 #: for the two flux-tunable qubits and for the coupler MODE (its standing bias

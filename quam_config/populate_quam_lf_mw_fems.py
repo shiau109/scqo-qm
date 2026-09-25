@@ -13,7 +13,9 @@ readout and saturation pulses.
 ########################################################################################################################
 import json
 from qualang_tools.units import unit
-from quam_config import Quam
+from pathlib import Path
+
+from scqo_qm.quam_io import load_state, save_state
 from quam_builder.builder.superconducting.pulses import add_DragCosine_pulses
 from quam.components.pulses import GaussianPulse
 import numpy as np
@@ -22,8 +24,12 @@ from pprint import pprint
 ########################################################################################################################
 # %%                                 QUAM loading and auxiliary functions
 ########################################################################################################################
-# Loads the QUAM
-machine = Quam.load()
+# Loads the QUAM. EDIT STATE_DIR before running: the folder generate_quam.py wrote,
+# or the setup's backend_config/ (`scqo state --sources` names it). It is stated here
+# rather than resolved, because a bare Quam.load() follows QUAM_STATE_PATH and then
+# qualibrate's [quam] state_path - whichever tree those name need not be this chip's.
+STATE_DIR = Path(__file__).resolve().parents[1] / "quam_state_6q"
+machine = load_state(STATE_DIR)
 # Class containing tools to help handling units and conversions.
 u = unit(coerce_to_integer=True)
 
@@ -237,7 +243,7 @@ for k, q in enumerate(machine.qubits):
 # %%                                         Save the updated QUAM
 ########################################################################################################################
 # save into state.json
-machine.save()
+save_state(machine, str(STATE_DIR))
 # Visualize the QUA config and save it
 pprint(machine.generate_config())
 with open("qua_config.json", "w+") as f:

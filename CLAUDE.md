@@ -127,10 +127,20 @@ scqo_qm/
                          #   built on them is backend/_power.py. Package root because
                          #   experiments/ cannot import from backend/ without cycling
   quam_fields.py         # the single neutral-field <-> QUAM mapping + whole-tree audits
-  quam_io.py             # how a QUAM tree is SAVED: save_state(machine, path) with
-                         #   include_defaults passed, so no save reads ~/.qualibrate
-                         #   (issue #38); the lab root pins it on its serialiser too, for
-                         #   the bare saves inside quam_builder's builders
+  quam_io.py             # THE DOOR to a QUAM tree on disk: load_state(path) /
+                         #   save_state(machine, path). Both NAME the folder, and the
+                         #   save states include_defaults, so neither reads
+                         #   QUAM_STATE_PATH or ~/.qualibrate (issue #38); the lab root
+                         #   pins include_defaults on its serialiser too, for the bare
+                         #   saves inside quam_builder's own builders. AST-scan enforced
+                         #   (tests/test_quam_io_door.py), which also carries the two
+                         #   build scripts allowed a bare load and the census of
+                         #   non-QUAM .save() receivers
+  _vendored/             # third-party code COPIED in, licence + upstream commit beside
+                         #   it: qualibration_libs' BatchableList + XarrayDataFetcher
+                         #   (its distribution requires qualibrate; this driver does
+                         #   not). Byte-identical to upstream bar the intra-package
+                         #   import - fix behaviour in scqo_qm/, never here
   components/            # lab pulse shapes + macros (FlatTopCosinePulse, ISwapImplementation,
                          #   ParametricReset - PERSISTED as __class__ in state.json: moving or
                          #   renaming them requires scripts/migrate_state_scqo_qm.py-style care)
@@ -229,7 +239,10 @@ Heterogeneous streams → each module defines its OWN `acquire()` and `probe()` 
 `(prog, sweep_axes, acquire)` — **the callable** (the backend unpacks it directly; same contract
 as `qubit_tomography`). ms→cycles conversions MUST use `Cast.mul_int_by_fixed` (the fixed product
 wraps modulo 16 — pinned by `tests/test_t1_tracking_shells.py`). Both refuse a missing readout
-threshold, the Bayesian one a missing confusion matrix, BY NAME before any QUA is built.
+threshold, the Bayesian one unmeasured readout fidelities, BY NAME before any QUA is built: its
+SPAM terms are `alpha = 1 - fidelity_e` / `beta = 1 - fidelity_g`, read from the scqo readout
+channel (`single_shot_readout` stores both) and passed to the builder as numbers — QUAM's own
+`confusion_matrix` is no longer read by anything here.
 
 **Active reset** (`reset_method="active"`) lives in `scqo_qm/experiments/_reset.py`, the ONE door
 (`check_reset_method`), with `QMBackend.acquire` re-checking before `probe()`. Opt-in is per
@@ -348,6 +361,8 @@ qualibrate_config computes its path once, at import).
 | `test_qc_populations.py`, `test_pair_swap_probes.py`, `test_parity_switch_shell.py`, `test_t1_tracking_shells.py`, `test_ramsey_cryoscope_probe.py`, `test_spectroscopy_cryoscope_probe.py` | pure builder math, param mapping, AST properties of the fused modules | no |
 | `test_mixed_quam.py`, `test_distortion.py`, `test_apply_distortion.py` | the lab QUAM root + distortion arithmetic | partly |
 | `test_quam_save_hermetic.py` | issue #38: build (quam_builder's own saves included), load and save a tree with no qualibrate config; the save lands in the LOAD folder even when `QUAM_STATE_PATH` has moved | yes |
+| `test_quam_io_door.py` | the AST scan: no bare `Quam.load()`, and every QUAM `save()` states `include_defaults` — with the build-script exceptions and the non-QUAM `.save()` census as literals | no |
+| `test_lib_fetcher.py` | the contract `_lib` takes from the vendored `qualibration-libs` pieces: both batching shapes, the fetcher's dataset, its scalar handles and `t_start` | no |
 | `test_close_qm.py` | the best-effort cluster-cleanup hook + its operator CLI (doubles, no cluster) | yes |
 | `test_cluster.py` | the read-only `scqo-qm cluster` query: QOP 3.x rows + the QOP 2.x fallback, never a close/halt, an unreadable QM never reads as idle (doubles, no cluster) | yes |
 | `test_cli.py` | the `scqo-qm` dispatcher: every OPERATOR_COMMANDS entry reachable under its subcommand, the console script declared | yes |

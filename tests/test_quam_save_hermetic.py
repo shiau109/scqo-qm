@@ -47,8 +47,8 @@ def no_qualibrate_config(tmp_path, monkeypatch):
     folder = tmp_path / "no_qualibrate"
     folder.mkdir()
     monkeypatch.setenv("QUAM_CONFIG_FILE", str(folder / "config.toml"))
-    # QMBackend.load() and the fixture builder both set this process-wide; the
-    # monkeypatch restores whatever it was once the test is done.
+    # The fixture builder sets this process-wide (quam_builder saves through it);
+    # the monkeypatch restores whatever it was once the test is done.
     monkeypatch.delenv("QUAM_STATE_PATH", raising=False)
 
     from quam.config import get_quam_config

@@ -11,16 +11,18 @@ State of the pulses at time of writing (from the loaded QUAM):
 >>> FILL IN the calibrated amplitude/length below before running. <<<
 The values here are PLACEHOLDERS. Run this once to persist into quam_state/state.json:
 
-    python quam_config/register_swap_macro.py
+    python quam_config/register_swap_macro.py <state folder>
 """
 
 from quam.components.pulses import SquarePulse
-from quam_config import Quam
+from quam_config._state_arg import state_folder
+from scqo_qm.quam_io import load_state, save_state
 from scqo_qm.components.macros.iswap_macro import ISwapImplementation
 
 FLUX_PULSE = "flattop_cosine"  # op name played on both control.z and coupler
 
-machine = Quam.load()
+STATE = state_folder(__doc__.splitlines()[0])
+machine = load_state(STATE)
 pair = machine.qubit_pairs["q1_q2"]
 
 # --- Control z-line swap pulse (PLACEHOLDER amplitude/length: calibrate these) ---------
@@ -40,5 +42,5 @@ print("control.z ops:", list(pair.qubit_control.z.operations.keys()))
 print("coupler ops:", list(pair.coupler.operations.keys()))
 print("pair macros:", list(pair.macros.keys()))
 
-machine.save()
+save_state(machine, str(STATE))
 print("Saved. q1_q2.macros['iswap'] is now bare-callable: pair.macros['iswap'].apply()")

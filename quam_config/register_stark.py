@@ -19,7 +19,7 @@ needs — plus the named operation on the channel, which is exactly what this wr
 >>> FILL IN the calibrated length / amplitude below before running. <<<
 The values here are PLACEHOLDERS. Run this once to persist into quam_state/state.json:
 
-    python quam_config/register_stark.py
+    python quam_config/register_stark.py <state folder>
 
 Constraints (else QM rejects the config):
   - length must be a multiple of 4 ns and >= 16
@@ -33,7 +33,8 @@ the save, and gate the config offline with `machine.generate_config()` under
 """
 
 from quam.components.pulses import SquarePulse
-from quam_config import Quam
+from quam_config._state_arg import state_folder
+from scqo_qm.quam_io import load_state, save_state
 
 OP = "stark"  # operation name played via qc_n_stark_amp's stark_operation
 
@@ -43,7 +44,8 @@ AMPLITUDE = 0.25  # MW-normalized amplitude. Keep AMPLITUDE * max_stark_amp with
                   # the swept amplitude_scale rides on top of this baked reference.
 # ----------------------------------------------------------------------------------------
 
-machine = Quam.load()
+STATE = state_folder(__doc__.splitlines()[0])
+machine = load_state(STATE)
 
 n = 0
 for q in machine.qubits.values():
@@ -58,5 +60,5 @@ for q in machine.qubits.values():
 if n == 0:
     raise SystemExit("No qubits with an xy line found; nothing to register.")
 
-machine.save()
+save_state(machine, str(STATE))
 print(f"Saved. '{OP}' (SquarePulse) registered on the xy line of {n} qubit(s).")

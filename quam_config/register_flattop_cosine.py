@@ -17,14 +17,15 @@ and to exist as a named operation on the channel -- which is exactly what this s
 >>> FILL IN the calibrated length / amplitude / edge_width below before running. <<<
 The values here are PLACEHOLDERS. Run this once to persist into quam_state/state.json:
 
-    python quam_config/register_flattop_cosine.py
+    python quam_config/register_flattop_cosine.py <state folder>
 
 Constraints (else FlatTopCosinePulse.waveform_function raises / QM rejects the config):
   - length must be a multiple of 4 ns and >= 16
   - 2 * edge_width <= length
 """
 
-from quam_config import Quam
+from quam_config._state_arg import state_folder
+from scqo_qm.quam_io import load_state, save_state
 from scqo_qm.components.pulses import FlatTopCosinePulse
 
 OP = "flattop_cosine"  # operation name played via node.parameters.coupler_operation / qubit_operation
@@ -36,7 +37,8 @@ AMPLITUDE = 0.25  # V. Keep < 0.5 (OPX1000 LF-FEM "direct" output rail): a store
 EDGE_WIDTH = 2   # samples per sine edge; flat top length = LENGTH - 2 * EDGE_WIDTH
 # ----------------------------------------------------------------------------------------
 
-machine = Quam.load()
+STATE = state_folder(__doc__.splitlines()[0])
+machine = load_state(STATE)
 
 n_pairs = 0
 for qp in machine.qubit_pairs.values():
@@ -56,5 +58,5 @@ for qp in machine.qubit_pairs.values():
 if n_pairs == 0:
     raise SystemExit("No qubit pairs with a coupler found; nothing to register.")
 
-machine.save()
+save_state(machine, str(STATE))
 print(f"Saved. '{OP}' (FlatTopCosinePulse) registered on coupler + both z lines of {n_pairs} pair(s).")

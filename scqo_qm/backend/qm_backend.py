@@ -47,7 +47,7 @@ from scqo.entities import Channel, Composite
 from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
-from scqo_qm.quam_io import save_state
+from scqo_qm.quam_io import load_state, save_state
 from scqo_qm._family import (
     FLUX_OPX_PLUS,
     RF_EXTERNAL_MIXER,
@@ -1053,19 +1053,17 @@ class QMBackend(Backend):
         self._timeout = timeout
 
     @classmethod
-    def load(cls, *, roster: "Roster", state_path: str | None = None,
+    def load(cls, *, roster: "Roster", state_path: str,
              timeout: float = _QM_SESSION_TIMEOUT_S) -> "QMBackend":
-        """Construct from a QUAM state. ``state_path`` overrides ``QUAM_STATE_PATH``;
-        when omitted the env / default configuration is used. A given ``state_path``
-        is also the device's explicit SAVE target, so a save never depends on the env
-        var still pointing where this session loaded from."""
-        import os
+        """Construct from the QUAM state in ``state_path`` — the setup's folder.
 
-        from quam_config import Quam
-
-        if state_path is not None:
-            os.environ["QUAM_STATE_PATH"] = state_path
-        return cls(Quam.load(), roster=roster, timeout=timeout, state_dir=state_path)
+        That folder is also the device's SAVE target. Neither half consults
+        ``QUAM_STATE_PATH`` or qualibrate's configuration any more: the state a session
+        runs on is decided by its setup (``scqo_backend.build_backend``), and a global
+        that another session or script can move is not a place to keep it.
+        """
+        return cls(load_state(state_path), roster=roster, timeout=timeout,
+                   state_dir=str(state_path))
 
     @property
     def device(self) -> QMDeviceModel:
