@@ -43,6 +43,7 @@ from scqo_qm.experiments._reset import (
 REPO = Path(__file__).resolve().parents[1]
 SHELLS = REPO / "scqo_qm" / "experiments"
 CARRIERS = {"qubit_relaxation", "qubit_ramsey", "qubit_ramsey_phasor",
+            "qubit_ramsey_flux_pulse",
             "qubit_echo", "qubit_power_rabi",
             "qubit_t1_ade", "qubit_t1_bayesian",
             "qubit_spectroscopy"}

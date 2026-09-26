@@ -33,6 +33,7 @@ from . import qc_swap_flux_stark  # noqa: F401  (import side effect: @register)
 from . import qc_trotter_compensation  # noqa: F401  (import side effect: @register)
 from . import qc_unidirectional_trotter  # noqa: F401  (import side effect: @register)
 from . import qubit_ramsey_cryoscope  # noqa: F401  (import side effect: @register)
+from . import qubit_ramsey_flux_pulse  # noqa: F401  (import side effect: @register)
 from . import qubit_deterministic_benchmarking  # noqa: F401  (import side effect: @register)
 from . import qubit_drag_alternating  # noqa: F401  (import side effect: @register)
 
