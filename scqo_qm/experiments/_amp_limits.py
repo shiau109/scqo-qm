@@ -34,7 +34,7 @@ MAX_AMP_SCALE = 2.0
 
 
 def check_amp_scale_window(prefactors: Iterable[float], *, name: str,
-                           knob: str = "max_amp_factor") -> None:
+                           knob: str = "start_amp_factor/end_amp_factor") -> None:
     """Refuse a prefactor sweep QUA cannot express, BY NAME and before building.
 
     Args:

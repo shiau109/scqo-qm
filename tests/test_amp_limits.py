@@ -35,7 +35,7 @@ def test_the_message_names_the_target_and_the_knob():
         check_amp_scale_window([0.5, 3.0], name="q1, q2")
     message = str(err.value)
     assert "q1, q2" in message
-    assert "max_amp_factor" in message
+    assert "start_amp_factor/end_amp_factor" in message
     assert str(MAX_AMP_SCALE) in message
 
 
