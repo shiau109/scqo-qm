@@ -1273,6 +1273,42 @@ class QMBackend(Backend):
                 continue
         return out
 
+    def readout_delay_context(self, target: str) -> dict:
+        """The instrument facts behind this target's readout delay.
+
+        The ``power_context`` shape — one duck-typed hook, one dict, vendor keys
+        inside — read by ``scqo.experiments.readout_time_of_flight`` to resolve
+        the acquisition window and by ``_tof_hint`` to name the field it must be
+        written into. ``field`` keys into :data:`fieldmap.VENDOR_ONLY`, so the
+        path, the unit and the edit instruction stay there and are not repeated
+        here.
+
+        ``floor_ns`` is 28 ns: QUA requires a multiple of 4 and the official
+        ``01a``/``01b`` nodes opened their window at exactly this value, which
+        makes it the number this lab has actually run against. A resonator with
+        no readout channel on this target reports ``{}`` — there is no
+        acquisition path, so there is nothing to say (the same two-empties rule
+        power_context follows).
+        """
+        try:
+            view = self._default_view(target, "readout")
+        except Exception:
+            return {}
+        resonator = getattr(view, "vendor", None)
+        if resonator is None:
+            return {}
+        from scqo_qm.experiments.readout_time_of_flight import ADC_FULL_SCALE_V
+
+        current = getattr(resonator, "time_of_flight", None)
+        return {
+            "field": "time_of_flight",
+            "floor_ns": 28.0,
+            "grid_ns": 4.0,
+            "sample_ns": 1.0,
+            "full_scale_v": ADC_FULL_SCALE_V,
+            "current_ns": None if current is None else float(current),
+        }
+
     def power_context(self, qubits: list[str]) -> dict:
         """Raw readout + drive chain values per qubit (run-record provenance only).
 

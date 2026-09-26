@@ -164,7 +164,12 @@ def _resonator(rf: float) -> SimpleNamespace:
         RF_frequency=rf,
         f_01=rf,
         LO_frequency=6.06e9,
+        # every real QUAM resonator carries one; readout_time_of_flight both
+        # reads it and temporarily writes it, so a stub without it fails on
+        # attribute access rather than on anything this driver decides
+        time_of_flight=28,
         opx_output=SimpleNamespace(full_scale_power_dbm=-11),
+        opx_input=SimpleNamespace(port_id=1),
         operations={"readout": ReadoutPulse()},
     )
 

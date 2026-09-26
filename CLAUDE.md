@@ -224,6 +224,20 @@ satisfy (last release carrying it: v3.13.0). The chevron's two QUA branches (bak
 below 17 ns, stretched `const` above) must emit the same volts — `resolve_amplitudes` is pure and
 pinned by `tests/test_pair_swap_probes.py`. The partial-swap workflow is SCQO TUTORIAL §12.
 
+**`readout_time_of_flight` BORROWS the field it measures.** It is the only probe here that
+records a RAW ADC trace (`declare_stream(adc_trace=True)`), and the acquisition window is
+opened by `resonator.time_of_flight` — the very number under test. So the probe writes that
+field to the frame the neutral experiment resolved (the 28 ns floor by default, as the retired
+01a/01b nodes did) and restores it in a `finally`. A miss leaves the setup carrying a delay
+chosen to be WRONG, which is worse than the mis-set value the operator ran this to repair;
+`tests/test_readout_time_of_flight.py` pins the restore on the error path too. Two more
+things there are load-bearing: `reset_if_phase` per shot (the trace is AVERAGED, and a
+free-running phase averages the step away — the fit then reports `arrival_unresolved` on a
+healthy setup), and `reduce_raw`, which converts the 12-bit counts to volts as `-adc / 2**12`
+(the input is inverting) under the contract's `I`/`Q` names. One target at a time: two
+resonators on one feedline share an input port, so a multiplexed raw capture would record
+both pulses superposed on one trace.
+
 **Readout output at the scqo boundary** (the readout schema — SCQO TUTORIAL §11): shot axis
 `shot_idx`; per-shot discriminated data stays `state` (integer LEVELS); FPGA-averaged
 discriminated data is `population` (the backend renames when the contract accepts it). Pair maps
