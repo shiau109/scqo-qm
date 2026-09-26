@@ -39,58 +39,69 @@ def _experiment(backend, roster, **params):
 
 # ------------------------------------------------------- the vendor mutation
 
-def test_the_probe_restores_both_fields_it_borrowed(backend, roster, monkeypatch):
-    """TWO fields are borrowed and both must come back.
+def _config_with(resonator_name="q1.resonator", tof=384, length=800):
+    """The two config entries this experiment amends, in QM's own shape."""
+    return {
+        "elements": {resonator_name: {
+            "time_of_flight": tof,
+            "operations": {"readout": f"{resonator_name}.readout.pulse"},
+        }},
+        "pulses": {f"{resonator_name}.readout.pulse": {
+            "length": length,
+            "waveforms": {"I": "wfI", "Q": "wfQ"},
+        }},
+        "waveforms": {
+            "wfI": {"type": "arbitrary", "samples": [0.1] * length},
+            "wfQ": {"type": "constant", "sample": 0.0},
+        },
+    }
 
-    ``time_of_flight`` is the window origin - leaving it written would hand the
-    setup a delay chosen to be WRONG (as early as the hardware allows), which is
-    worse than the mis-set value the operator ran this to fix.
 
-    The readout operation's LENGTH matters for a less obvious reason: an ADC
-    trace lasts exactly as long as the measurement that produced it. The live
-    5Q4C tree stores an 800 ns readout while this experiment's axis defaults to
-    1000 samples, so a probe that left the op alone would declare an axis the
-    returned trace does not match."""
+def test_the_amendment_opens_the_window_and_stretches_the_readout(backend,
+                                                                  roster):
+    """THE regression this file exists for, and it is invisible offline any
+    other way.
+
+    Both values are read by generate_config(), which the backend calls AFTER
+    probe() returns - so the obvious approach (write the QUAM tree in probe(),
+    restore in a finally) never reaches the instrument: the program opens its
+    window at the very setting under test, and the QUA assembles cleanly
+    either way. Found by `scqo run ... --preview` against the real 5Q4C tree,
+    2026-09-26, where the embedded config still read time_of_flight 384.
+
+    So the amendment is on the generated CONFIG, and this asserts it there."""
+    exp = _experiment(backend, roster, readout_len_ns=500)
+    out = exp._amend(_config_with(tof=384, length=800))
+
+    element = out["elements"]["q1.resonator"]
+    assert element["time_of_flight"] == 28        # the floor, not the stored 384
+    assert out["pulses"]["q1.resonator.readout.pulse"]["length"] == 500
+    # the plateau has to outlast the window: a stored envelope shorter than the
+    # trace would end inside it and take the plateau with it
+    assert len(out["waveforms"]["wfI"]["samples"]) == 500
+
+
+def test_the_amendment_touches_no_vendor_state(backend, roster):
+    """Nothing is borrowed and nothing is restored, so nothing can be left
+    wrong by a crash - which for THIS experiment would mean a setup carrying a
+    delay deliberately chosen to be the earliest the hardware allows."""
     resonator = backend.machine.qubits["q1"].resonator
     before = (resonator.time_of_flight, resonator.operations["readout"].length)
 
-    seen = {}
-    monkeypatch.setattr(
-        "scqo_qm.experiments.readout_time_of_flight.build_program",
-        lambda machine, qubits, **kw: seen.update(
-            kw,
-            borrowed_tof=qubits[0].resonator.time_of_flight,
-            borrowed_len=qubits[0].resonator.operations["readout"].length,
-        ) or ("prog", {}))
-
     exp = _experiment(backend, roster, readout_len_ns=500)
-    exp.sweep_axes = exp.define_sweep()
-    exp.probe()
+    exp._amend(_config_with())
 
-    assert seen["borrowed_tof"] == 28       # the floor, while the program built
-    assert seen["borrowed_len"] == 500      # == the declared axis, not the stored op
     assert (resonator.time_of_flight,
             resonator.operations["readout"].length) == before
 
 
-def test_the_time_of_flight_is_restored_even_when_the_build_raises(
-        backend, roster, monkeypatch):
-    """The restore is in a finally, not after the return."""
-    resonator = backend.machine.qubits["q1"].resonator
-    before = (resonator.time_of_flight, resonator.operations["readout"].length)
-
-    def boom(machine, qubits, **kw):
-        raise RuntimeError("build failed")
-
-    monkeypatch.setattr(
-        "scqo_qm.experiments.readout_time_of_flight.build_program", boom)
+def test_preview_and_the_run_amend_the_same_way(backend, roster):
+    """`--preview` exists to show what WILL run. The two paths reach the config
+    through different doors (patch_preview_config vs the probe's own acquire
+    callable), so they are pinned to one amendment."""
     exp = _experiment(backend, roster, readout_len_ns=500)
-    exp.sweep_axes = exp.define_sweep()
-
-    with pytest.raises(RuntimeError, match="build failed"):
-        exp.probe()
-    assert (resonator.time_of_flight,
-            resonator.operations["readout"].length) == before
+    assert (exp.patch_preview_config(_config_with())
+            == exp._amend(_config_with()))
 
 
 def test_the_probe_runs_one_target_at_a_time(backend, roster, monkeypatch):
@@ -101,12 +112,34 @@ def test_the_probe_runs_one_target_at_a_time(backend, roster, monkeypatch):
         "scqo_qm.experiments.readout_time_of_flight.build_program",
         lambda machine, qubits, **kw: seen.update(
             batches=[list(b) for b in qubits.batch()]) or ("prog", {}))
+    monkeypatch.setattr(backend.machine, "generate_config",
+                        lambda: _config_with(), raising=False)
 
     exp = _experiment(backend, roster, readout_len_ns=500)
     exp.sweep_axes = exp.define_sweep()
     exp.probe()
 
     assert all(len(batch) == 1 for batch in seen["batches"])
+
+
+def test_the_probe_hands_its_amended_config_to_its_own_acquire(backend, roster,
+                                                               monkeypatch):
+    """The 3-tuple form: the backend's shared fetch path would otherwise
+    REGENERATE a config, throwing the amendment away — the same shape the
+    parametric-drive shells use for their oscillator patch."""
+    monkeypatch.setattr(
+        "scqo_qm.experiments.readout_time_of_flight.build_program",
+        lambda machine, qubits, **kw: ("prog", {"axes": 1}))
+    monkeypatch.setattr(backend.machine, "generate_config",
+                        lambda: _config_with(), raising=False)
+
+    exp = _experiment(backend, roster, readout_len_ns=500)
+    exp.sweep_axes = exp.define_sweep()
+    res = exp.probe()
+
+    assert len(res) == 3, "probe must return (prog, axes, acquire)"
+    carried = res[2].keywords["config"]
+    assert carried["elements"]["q1.resonator"]["time_of_flight"] == 28
 
 
 # ------------------------------------------------------------ the reduction

@@ -13,16 +13,30 @@ carry the measurement:
   vanishes into the noise and the fit reports ``arrival_unresolved`` on a setup
   that is perfectly fine. The retired official node did the same thing for the
   same reason.
-* TWO vendor fields are borrowed for the run and restored in a ``finally``:
-  ``resonator.time_of_flight``, because it IS the acquisition window's origin,
-  and the readout operation's ``length``, because an ADC trace is exactly as
-  long as the measurement that produced it. The second one is not cosmetic —
-  the live 5Q4C tree stores an 800 ns readout while this experiment's axis
-  defaults to 1000 samples, so leaving it alone hands the backend a trace that
-  does not match the declared axis. (The retired node set both for the same
-  reason.) These are run-scoped vendor mutations of the kind
-  ``setup_snapshot.drift`` exists to catch, which is why the restore is a
-  ``finally`` and is tested on the error path.
+* TWO config values are AMENDED for this run: the element's
+  ``time_of_flight``, because it IS the acquisition window's origin, and the
+  readout pulse's ``length``, because an ADC trace lasts exactly as long as the
+  measurement that produced it (the live 5Q4C tree stores an 800 ns readout
+  while this experiment's axis defaults to 1000 samples, so leaving it alone
+  would declare an axis the returned trace cannot match).
+
+  THE AMENDMENT IS ON THE GENERATED CONFIG, NOT ON THE QUAM TREE. Writing the
+  tree and restoring it afterwards is the obvious approach and it is wrong
+  twice over. First, both values are read by ``generate_config()``, which the
+  backend calls AFTER ``probe()`` returns, so a borrow released at the end of
+  ``probe()`` never reaches the instrument at all — the program would open its
+  window at the very setting under test, which is the one failure mode this
+  experiment is designed around, and it assembles cleanly either way.
+  (Measured: ``scqo run ... --preview`` against the real 5Q4C tree on
+  2026-09-26 still showed ``time_of_flight: 384``.) Second, a tree mutation
+  that outlives a crash leaves the setup carrying a delay deliberately chosen
+  to be WRONG — worse than the mis-set value the operator ran this to repair.
+
+  So nothing here touches vendor state. ``probe()`` returns the 3-tuple form
+  with its own acquire callable carrying the amended config, and
+  ``patch_preview_config`` gives ``--preview`` the same one — the pattern the
+  parametric-drive shells established (``_parametric.py``), and the reason the
+  preview and the run cannot diverge.
 
 Adapted from the official node ``01b_time_of_flight_mw_fem``, vendored in this
 repo until v3.13.0. What changed: the node reported ``tof_to_add`` against a
@@ -55,6 +69,11 @@ from scqo.experiments.readout_time_of_flight import TIME_AXIS
 #: range, which is what ``_ADC_TO_VOLTS`` converts and what the estimator's
 #: saturation check compares against.
 ADC_FULL_SCALE_V = 0.5
+
+#: normalized full scale for an MW-FEM waveform (an Octave IQ channel is
+#: bounded in VOLTS instead - see _octave.MAX_IF_AMP_V; the two families do not
+#: share the unit, which is why this is a local constant and not that one).
+_MAX_WAVEFORM = 1.0
 
 #: the readout operation this probe plays and resizes.
 _OPERATION = "readout"
@@ -108,44 +127,68 @@ def build_program(machine, qubits, *, num_shots: int, times_ns,
 class QMReadoutTimeOfFlight(ReadoutTimeOfFlight):
     """Record the raw ADC trace of the readout pulse on the QM OPX."""
 
-    def probe(self) -> Any:
+    def _amend(self, config: dict) -> dict:
+        """Open the window at the resolved frame and stretch the readout to the
+        trace length — on the CONFIG, in place, for this run only."""
         from scqo_qm.experiments._lib import select_qubits
 
         machine = self.backend.machine  # type: ignore[attr-defined]
         frame = self.resolved_frame()
         window_ns = int(round(frame["window_start_ns"]))
-        qubits = select_qubits(machine, self.params.targets, multiplexed=False)
-        times = self.sweep_axes[TIME_AXIS]
+        trace_ns = int(round(float(self.params.readout_len_ns)))
 
-        # Run-scoped vendor mutation: open the acquisition window at the frame
-        # the experiment resolved, and put it back. A miss here would leave the
-        # setup with a deliberately-wrong delay, which is the exact failure this
-        # experiment exists to repair.
-        trace_ns = int(round(float(times.size) * float(frame["sample_ns"])))
-        previous = {
-            q.name: (q.resonator.time_of_flight,
-                     q.resonator.operations[_OPERATION].length)
-            for q in qubits
-        }
-        try:
-            for qubit in qubits:
-                qubit.resonator.time_of_flight = window_ns
-                # the trace lasts as long as the measurement: a stored readout
-                # shorter than the requested axis returns fewer samples than the
-                # contract declares, and a longer one keeps the instrument busy
-                # past the plateau for nothing
-                qubit.resonator.operations[_OPERATION].length = trace_ns
-            return build_program(
-                machine, qubits,
-                num_shots=self.params.num_averages,
-                times_ns=times,
-                operation=_OPERATION,
-            )
-        finally:
-            for qubit in qubits:
-                tof, length = previous[qubit.name]
-                qubit.resonator.time_of_flight = tof
-                qubit.resonator.operations[_OPERATION].length = length
+        factor = float(self.params.readout_amp_factor)
+
+        for qubit in select_qubits(machine, self.params.targets,
+                                   multiplexed=False):
+            element = config["elements"][qubit.resonator.name]
+            element["time_of_flight"] = window_ns
+            pulse = config["pulses"][element["operations"][_OPERATION]]
+            pulse["length"] = trace_ns
+            for name in pulse.get("waveforms", {}).values():
+                waveform = config["waveforms"][name]
+                if waveform.get("type") == "arbitrary":
+                    samples = [s * factor for s in waveform["samples"]]
+                    # hold the last sample: the plateau has to outlast the
+                    # window, and a shorter stored envelope would end inside it
+                    waveform["samples"] = (
+                        samples + [samples[-1]] * (trace_ns - len(samples))
+                        if len(samples) < trace_ns else samples[:trace_ns])
+                    peak = max(abs(s) for s in waveform["samples"])
+                else:
+                    waveform["sample"] = waveform.get("sample", 0.0) * factor
+                    peak = abs(waveform["sample"])
+                if peak > _MAX_WAVEFORM:
+                    raise ValueError(
+                        f"readout_amp_factor={factor:g} puts {qubit.name}'s "
+                        f"readout waveform {name!r} at {peak:.3f}, past the "
+                        f"{_MAX_WAVEFORM} full-scale rail. The DAC would clip "
+                        f"and the SIMULATOR WOULD NOT SHOW IT - and a clipped "
+                        f"pulse flattens the very edge this experiment measures. "
+                        f"Lower the factor, or raise the channel's "
+                        f"full_scale_power_dbm and re-calibrate the readout.")
+        return config
+
+    def patch_preview_config(self, config: dict) -> dict:
+        """``--preview`` must show the config the run executes against."""
+        return self._amend(config)
+
+    def probe(self) -> Any:
+        from functools import partial
+
+        from scqo_qm.experiments._lib import acquire as _lib_acquire
+        from scqo_qm.experiments._lib import select_qubits
+
+        machine = self.backend.machine  # type: ignore[attr-defined]
+        qubits = select_qubits(machine, self.params.targets, multiplexed=False)
+        prog, sweep_axes = build_program(
+            machine, qubits,
+            num_shots=self.params.num_averages,
+            times_ns=self.sweep_axes[TIME_AXIS],
+            operation=_OPERATION,
+        )
+        config = self._amend(machine.generate_config())
+        return prog, sweep_axes, partial(_lib_acquire, config=config)
 
     def reduce_raw(self, raw: xr.Dataset) -> xr.Dataset:
         """Raw ADC counts -> volts, under the contract's variable names.
