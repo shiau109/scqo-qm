@@ -21,9 +21,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from scqo_qm.experiments._coupler_tone import choose_band as _choose_band
 from scqo_qm.experiments.pair_coupler_spectroscopy_swap import (
     RAMP_OPERATION,
-    _choose_band,
     ramp_samples,
 )
 

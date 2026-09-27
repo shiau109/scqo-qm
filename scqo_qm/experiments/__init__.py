@@ -25,6 +25,7 @@ if not any(getattr(_h, "stream", None) is _sys.stderr for _h in _qm_logger.handl
 
 from . import pair_coupler_crossing_pulse  # noqa: F401  (import side effect: @register)
 from . import pair_coupler_spectroscopy_swap  # noqa: F401  (import side effect: @register)
+from . import pair_coupler_spectroscopy_zz  # noqa: F401  (import side effect: @register)
 from . import pair_swap_chevron  # noqa: F401  (import side effect: @register)
 from . import pair_swap_angle  # noqa: F401  (import side effect: @register)
 from . import pair_swap_flux_map  # noqa: F401  (import side effect: @register)
