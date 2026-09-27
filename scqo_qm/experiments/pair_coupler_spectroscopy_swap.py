@@ -1,7 +1,7 @@
 """Coupler swap-spectroscopy acquisition probe: vendor code only (qm/quam) - no scqo, no scqat.
 
 Per shot and tone frequency, two arms back to back (ramp, then reference): reset
-both members -> align -> the probe's xy plays ``saturation`` for the tone length at
+both members -> align -> the tone member's xy plays ``saturation`` for the tone length at
 IF = f - LO -> align (+ buffer) -> ramp arm: the ramped flux line plays one
 arbitrary waveform (first sample at the ramp start, linear to the ramp end, then
 the output drops back to idle); reference arm: that line waits the same length ->
@@ -16,7 +16,7 @@ multi-photon ladder, its ``anharmonicity_hz``) are inherited from
 ``scqo.experiments.PairCouplerSpectroscopySwap``.
 
 ONE LO PER RUN, AND ITS OWN CONFIG (``_coupler_tone.moved_lo_config``, shared with
-``pair_coupler_spectroscopy_zz``): the probe's port at the window centre, the MW-FEM
+``pair_coupler_spectroscopy_zz``): the tone member's port at the window centre, the MW-FEM
 band switched with its port-pair partner when needed, the QUAM tree restored straight
 after the config is built, and that config handed to the backend through the 3-tuple
 acquire callable. ``patch_preview_config`` gives ``--preview`` the same config.
@@ -92,7 +92,7 @@ def build_program(
     qubit_pair,
     *,
     tone_ifs_hz: Sequence[int],
-    probe_role: str,
+    tone_role: str,
     ramp_element: str,
     ramp_ns: int,
     tone_ns: int,
@@ -103,15 +103,15 @@ def build_program(
 ):
     """Build the swap-spectroscopy QUA program for ONE pair. Returns (program, sweep_axes).
 
-    ``tone_ifs_hz``: the tone's IF per point (Hz, relative to the probe port's LO
+    ``tone_ifs_hz``: the tone's IF per point (Hz, relative to the tone port's LO
     in the config the program runs against), in the order to be swept.
-    ``probe_role``: ``"control"`` / ``"target"`` - the member that gets the tone.
+    ``tone_role``: ``"control"`` / ``"target"`` - the member that gets the tone.
     ``ramp_element``: the element that plays :data:`RAMP_OPERATION` (it must be in
     that config); ``ramp_ns`` its length, the reference arm's wait.
     """
     qp = qubit_pair
-    if probe_role not in ("control", "target"):
-        raise ValueError(f"probe_role must be control or target, got {probe_role!r}")
+    if tone_role not in ("control", "target"):
+        raise ValueError(f"tone_role must be control or target, got {tone_role!r}")
     for what, ns in (("ramp", ramp_ns), ("tone", tone_ns)):
         if ns < 16 or ns % _CLOCK_NS:
             raise ValueError(f"{what} of {ns} ns: needs a multiple of 4 ns from 16 ns up")
@@ -121,7 +121,7 @@ def build_program(
     if np.max(np.abs(ifs)) > MAX_IF_HZ:
         raise ValueError(f"tone IF reaches {np.max(np.abs(ifs)) / 1e6:.0f} MHz, past "
                          f"+-{MAX_IF_HZ / 1e6:.0f} MHz around the LO")
-    probe = qp.qubit_control if probe_role == "control" else qp.qubit_target
+    tone = qp.qubit_control if tone_role == "control" else qp.qubit_target
     ramp_cycles = ramp_ns // _CLOCK_NS
     tone_cycles = tone_ns // _CLOCK_NS
     buffer_cycles = buffer_ns // _CLOCK_NS
@@ -151,8 +151,8 @@ def build_program(
                     qp.qubit_control.reset(reset_type, simulate)
                     qp.qubit_target.reset(reset_type, simulate)
                     align()
-                    probe.xy.update_frequency(f_if)
-                    probe.xy.play("saturation", duration=tone_cycles)
+                    tone.xy.update_frequency(f_if)
+                    tone.xy.play("saturation", duration=tone_cycles)
                     align()
                     if buffer_cycles:
                         wait(buffer_cycles, ramp_element)
@@ -209,19 +209,19 @@ class QMPairCouplerSpectroscopySwap(JointPopulationMixin, PairCouplerSpectroscop
 
         qp = vendor_pair(self, pair)
         self._high_side = role_side(self, "high", field="targets")
-        probe_role = role_side(self, p.probe, field="probe")
-        probe_qubit = qp.qubit_control if probe_role == "control" else qp.qubit_target
+        tone_role = role_side(self, p.tone_on, field="tone_on")
+        tone_qubit = qp.qubit_control if tone_role == "control" else qp.qubit_target
         if p.ramp_on == "coupler":
             channel, what = qp.coupler, f"{pair} coupler"
         else:
-            channel, what = probe_qubit.z, f"{pair} probe {probe_qubit.name}.z"
+            channel, what = tone_qubit.z, f"{pair} tone member {tone_qubit.name}.z"
         first, last = self.ramp_play_order()  # ramp_v, as played
         check_ramp(channel, name=what, start_v=first, end_v=last)
 
         ramp_ns = self.ramp_duration_ns()
         self._ramp_duration_ns = float(ramp_ns)
         lo = self.lo_hz()
-        config, moved = moved_lo_config(machine, probe_qubit, lo_hz=lo, experiment=self.name)
+        config, moved = moved_lo_config(machine, tone_qubit, lo_hz=lo, experiment=self.name)
         add_ramp_to_config(config, channel.name, ramp_samples(first, last, ramp_ns))
         self._moved = moved
 
@@ -229,7 +229,7 @@ class QMPairCouplerSpectroscopySwap(JointPopulationMixin, PairCouplerSpectroscop
         prog, axes = build_program(
             machine, qp,
             tone_ifs_hz=np.round(freqs - lo).astype(int),
-            probe_role=probe_role, ramp_element=channel.name, ramp_ns=ramp_ns,
+            tone_role=tone_role, ramp_element=channel.name, ramp_ns=ramp_ns,
             tone_ns=int(p.tone_len_ns), buffer_ns=p.flux_buffer_ns,
             num_shots=p.num_averages, reset_type=reset_type)
         sweep_axes = {

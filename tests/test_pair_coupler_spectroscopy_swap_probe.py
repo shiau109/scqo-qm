@@ -6,7 +6,7 @@ Three halves:
   one when it holds the LO, else the lowest one holding the LO AND the port-pair
   partner's LO, so the partner is parked only when it has to be);
 * the class built on the live ``quam_state``: the config it hands the backend has
-  the probe's port at the window centre (band 2 for the ~6.8 GHz coupler) with the
+  the tone member's port at the window centre (band 2 for the ~6.8 GHz coupler) with the
   ramp operation on the coupler, while the QUAM tree is exactly as it was;
 * the generated QUA: per tone point the IF update, the stretched ``saturation``,
   then the ramp in one arm and a wait of the same length in the other, both
@@ -113,15 +113,15 @@ def _port(config, channel):
 
 def test_the_run_config_moves_the_lo_and_the_tree_does_not(machine, live_roster):
     before = _tree(machine)
-    exp = _experiment(machine, live_roster)          # probe = high = q2 (vendor target)
+    exp = _experiment(machine, live_roster)          # tone_on = high = q2 (vendor target)
     prog, axes, acquire = exp.probe()
     assert _tree(machine) == before, "the QUAM tree was left moved"
     config = exp._config
     qp = machine.qubit_pairs["q1_q2"]
-    probe_q, partner_q = qp.qubit_target, qp.qubit_control
-    probe_port = _port(config, probe_q.xy)
-    assert probe_port["band"] == 2
-    assert probe_port["upconverter_frequency"] == pytest.approx(6.80e9)
+    tone_q, partner_q = qp.qubit_target, qp.qubit_control
+    tone_port = _port(config, tone_q.xy)
+    assert tone_port["band"] == 2
+    assert tone_port["upconverter_frequency"] == pytest.approx(6.80e9)
     # the partner follows the band but keeps its LO: band 2 holds 4.9 GHz
     partner_port = _port(config, partner_q.xy)
     assert partner_port["band"] == 2
@@ -149,13 +149,13 @@ def test_the_program_plays_both_arms(machine, live_roster):
     prog, _axes, _acq = exp.probe()
     script = generate_qua_script(prog, exp._config).replace(chr(34), chr(39))
     qp = machine.qubit_pairs["q1_q2"]
-    probe_xy = qp.qubit_target.xy.name
+    tone_xy = qp.qubit_target.xy.name
     coupler = qp.coupler.name
     ramp_cycles = exp.ramp_duration_ns() // 4           # 400 ns -> 100 cycles
     assert exp.ramp_duration_ns() == 400
-    assert re.search(rf"update_frequency\('{re.escape(probe_xy)}', v\d+", script)
+    assert re.search(rf"update_frequency\('{re.escape(tone_xy)}', v\d+", script)
     # the tone (10 us = 2500 cycles) in BOTH arms, the ramp in one
-    assert script.count(f"play('saturation', '{probe_xy}', duration=2500)") == 2
+    assert script.count(f"play('saturation', '{tone_xy}', duration=2500)") == 2
     assert script.count(f"play('{RAMP_OPERATION}', '{coupler}')") == 1
     assert f"wait({ramp_cycles}, '{coupler}')" in script
     for q in (qp.qubit_control, qp.qubit_target):
@@ -165,7 +165,7 @@ def test_the_program_plays_both_arms(machine, live_roster):
 def test_ramp_v_is_played_in_its_order(machine, live_roster):
     """ramp_v = (0.14, 0): the output jumps to 0.14 at once and the slow segment runs
     back toward idle - the swap happens on the way back. Same length as (0, 0.14)."""
-    exp = _experiment(machine, live_roster, ramp_v=(0.14, 0.0), probe="low")
+    exp = _experiment(machine, live_roster, ramp_v=(0.14, 0.0), tone_on="low")
     exp.probe()
     coupler = machine.qubit_pairs["q1_q2"].coupler.name
     pulse = exp._config["pulses"][exp._config["elements"][coupler]["operations"][RAMP_OPERATION]]
@@ -181,8 +181,8 @@ def test_a_ramp_past_the_rail_is_refused(machine, live_roster):
         exp.probe()
 
 
-def test_ramp_on_probe_plays_on_the_probes_z(machine, live_roster):
-    exp = _experiment(machine, live_roster, ramp_on="probe", ramp_v=(0.0, -0.05))
+def test_ramp_on_the_tone_member_plays_on_its_z(machine, live_roster):
+    exp = _experiment(machine, live_roster, ramp_on="tone_member", ramp_v=(0.0, -0.05))
     exp.probe()
     z = machine.qubit_pairs["q1_q2"].qubit_target.z.name
     assert RAMP_OPERATION in exp._config["elements"][z]["operations"]
