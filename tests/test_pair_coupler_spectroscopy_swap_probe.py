@@ -88,7 +88,7 @@ def _experiment(machine, live_roster, **kw):
         pytest.skip("live state has no pair q1_q2")
     backend = QMBackend(machine, roster=live_roster)
     params = QMPairCouplerSpectroscopySwap.Parameters(
-        targets=["q1_q2"], **{"ramp_end_v": 0.14, "num_tone_freq_points": 11,
+        targets=["q1_q2"], **{"ramp_v": (0.0, 0.14), "num_tone_freq_points": 11,
                               "num_averages": 10, **kw})
     exp = QMPairCouplerSpectroscopySwap(backend, params)
     exp.device = recording_device(backend, live_roster)
@@ -145,7 +145,7 @@ def test_the_run_config_moves_the_lo_and_the_tree_does_not(machine, live_roster)
 def test_the_program_plays_both_arms(machine, live_roster):
     from qm import generate_qua_script
 
-    exp = _experiment(machine, live_roster, ramp_start_v=0.08, flux_buffer_ns=100)
+    exp = _experiment(machine, live_roster, ramp_v=(0.08, 0.14), flux_buffer_ns=100)
     prog, _axes, _acq = exp.probe()
     script = generate_qua_script(prog, exp._config).replace(chr(34), chr(39))
     qp = machine.qubit_pairs["q1_q2"]
@@ -162,10 +162,10 @@ def test_the_program_plays_both_arms(machine, live_roster):
         assert script.count(f"'{q.resonator.name}'") >= 2   # read out in both arms
 
 
-def test_fast_then_slow_plays_the_ramp_backwards(machine, live_roster):
-    """The jump goes to the far end at once and the slow segment runs back toward
-    idle - the swap happens on the way back. Same length as the other shape."""
-    exp = _experiment(machine, live_roster, ramp_shape="fast_then_slow", probe="low")
+def test_ramp_v_is_played_in_its_order(machine, live_roster):
+    """ramp_v = (0.14, 0): the output jumps to 0.14 at once and the slow segment runs
+    back toward idle - the swap happens on the way back. Same length as (0, 0.14)."""
+    exp = _experiment(machine, live_roster, ramp_v=(0.14, 0.0), probe="low")
     exp.probe()
     coupler = machine.qubit_pairs["q1_q2"].coupler.name
     pulse = exp._config["pulses"][exp._config["elements"][coupler]["operations"][RAMP_OPERATION]]
@@ -176,13 +176,13 @@ def test_fast_then_slow_plays_the_ramp_backwards(machine, live_roster):
 
 
 def test_a_ramp_past_the_rail_is_refused(machine, live_roster):
-    exp = _experiment(machine, live_roster, ramp_end_v=0.6)
+    exp = _experiment(machine, live_roster, ramp_v=(0.6, 0.0))
     with pytest.raises(ValueError, match="full scale|amplitude_scale"):
         exp.probe()
 
 
 def test_ramp_on_probe_plays_on_the_probes_z(machine, live_roster):
-    exp = _experiment(machine, live_roster, ramp_on="probe", ramp_end_v=-0.05)
+    exp = _experiment(machine, live_roster, ramp_on="probe", ramp_v=(0.0, -0.05))
     exp.probe()
     z = machine.qubit_pairs["q1_q2"].qubit_target.z.name
     assert RAMP_OPERATION in exp._config["elements"][z]["operations"]

@@ -27,7 +27,7 @@ an Octave tree is refused by name (its LO grid and shared synthesizers are
 ``broadband_qubit_spectroscopy``'s business).
 
 THE RAMP is an arbitrary waveform on the ramped line's element, added to that
-config (1 GS/s, linear between the two ends in the order ``ramp_shape`` gives -
+config (1 GS/s, linear from ``ramp_v``'s first point to its last - the play order,
 ``ramp_play_order()``), so it rides on the standing bias like any flux pulse; the
 rail, the idle + excursion sum and the sample range are checked before any QUA is
 built.
@@ -332,13 +332,13 @@ class QMPairCouplerSpectroscopySwap(JointPopulationMixin, PairCouplerSpectroscop
             channel, what = qp.coupler, f"{pair} coupler"
         else:
             channel, what = probe_qubit.z, f"{pair} probe {probe_qubit.name}.z"
-        check_ramp(channel, name=what, start_v=p.ramp_start_v, end_v=p.ramp_end_v)
+        first, last = self.ramp_play_order()  # ramp_v, as played
+        check_ramp(channel, name=what, start_v=first, end_v=last)
 
         ramp_ns = self.ramp_duration_ns()
         self._ramp_duration_ns = float(ramp_ns)
         lo = self.lo_hz()
         config, moved = moved_lo_config(machine, probe_qubit, lo_hz=lo)
-        first, last = self.ramp_play_order()  # ramp_shape decides which end comes first
         add_ramp_to_config(config, channel.name, ramp_samples(first, last, ramp_ns))
         self._moved = moved
 
