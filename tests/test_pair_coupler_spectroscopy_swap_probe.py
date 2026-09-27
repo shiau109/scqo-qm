@@ -162,6 +162,19 @@ def test_the_program_plays_both_arms(machine, live_roster):
         assert script.count(f"'{q.resonator.name}'") >= 2   # read out in both arms
 
 
+def test_fast_then_slow_plays_the_ramp_backwards(machine, live_roster):
+    """The jump goes to the far end at once and the slow segment runs back toward
+    idle - the swap happens on the way back. Same length as the other shape."""
+    exp = _experiment(machine, live_roster, ramp_shape="fast_then_slow", probe="low")
+    exp.probe()
+    coupler = machine.qubit_pairs["q1_q2"].coupler.name
+    pulse = exp._config["pulses"][exp._config["elements"][coupler]["operations"][RAMP_OPERATION]]
+    samples = exp._config["waveforms"][pulse["waveforms"]["single"]]["samples"]
+    assert len(samples) == 936
+    assert samples[0] == pytest.approx(0.14) and samples[-1] == pytest.approx(0.0)
+    assert np.all(np.diff(samples) < 0)
+
+
 def test_a_ramp_past_the_rail_is_refused(machine, live_roster):
     exp = _experiment(machine, live_roster, ramp_end_v=0.6)
     with pytest.raises(ValueError, match="full scale|amplitude_scale"):
