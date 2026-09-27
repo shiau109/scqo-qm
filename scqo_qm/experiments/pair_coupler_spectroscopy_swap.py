@@ -11,7 +11,8 @@ Loops: averages (outer) -> tone IF (in the order given) -> arm.
 QM coupler swap spectroscopy for scqo - supplies ``probe()`` + the joint-population
 reduction.
 
-Parameters, the fit and the writeback (the coupler's ``f_01_hz``) are inherited from
+Parameters, the fit and the writeback (the coupler's ``f_01_hz`` and, from the
+multi-photon ladder, its ``anharmonicity_hz``) are inherited from
 ``scqo.experiments.PairCouplerSpectroscopySwap``.
 
 ONE LO PER RUN, AND ITS OWN CONFIG. The tone window sits far from the probe's drive
