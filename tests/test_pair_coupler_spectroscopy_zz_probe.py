@@ -5,8 +5,9 @@ member's port at the window centre (band 2 for a ~6.8 GHz coupler) while the QUA
 tree is exactly as it was, and the pi member - that port's partner on q1_q2 - follows
 the band with its LO unchanged. The generated QUA: per tone point the IF update on
 the tone member, the stretched ``saturation`` in both arms, then the pi member's
-``x180`` in one arm and a wait of the same length in the other, both members read
-out. The pi goes to the member the tone does NOT ride on.
+SELECTIVE pi - its ``saturation`` scaled to the x180's rotation area over 2 us - in one
+arm and a wait of the same length in the other, both members read out. The pi goes to
+the member the tone does NOT ride on.
 """
 
 from __future__ import annotations
@@ -18,18 +19,45 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from scqo_qm.experiments.pair_coupler_spectroscopy_zz import PI_OPERATION, pi_length_ns
+from scqo_qm.experiments.pair_coupler_spectroscopy_zz import (
+    SQUARE_OPERATION,
+    pulse_area_ns,
+    selective_pi_scale,
+)
 
 STATE = str(Path(__file__).resolve().parents[1] / "quam_state")
 
 
-def test_a_pi_member_without_an_x180_is_refused_by_name():
+def _pulse(samples, detuning=0.0, amplitude=None):
+    samples = np.asarray(samples, dtype=complex)
+    return SimpleNamespace(calculate_waveform=lambda: samples, length=samples.size,
+                           detuning=detuning, amplitude=amplitude)
+
+
+def test_the_area_undoes_the_pulses_own_frame_detuning():
+    """A 16 ns cosine of amplitude A sums to 7.5 A; a frame detuning baked into the
+    samples (5Q4C q1's x180: -8.7 MHz) must not shrink it."""
+    t = np.arange(16) * 1e-9
+    env = 0.2 * 0.5 * (1 - np.cos(2 * np.pi * np.arange(16) / 15))
+    assert pulse_area_ns(_pulse(env)) == pytest.approx(1.5)
+    rotated = env * np.exp(1j * 2 * np.pi * -8.7e6 * t)
+    assert rotated.sum().real < 1.4                       # the naive sum comes up short
+    assert pulse_area_ns(_pulse(rotated, detuning=-8.7e6)) == pytest.approx(1.5)
+
+
+def test_the_selective_pi_keeps_the_x180_area():
+    q = SimpleNamespace(name="qY", xy=SimpleNamespace(operations={
+        "x180": _pulse(0.2 * 0.5 * (1 - np.cos(2 * np.pi * np.arange(16) / 15))),
+        SQUARE_OPERATION: SimpleNamespace(amplitude=0.5)}))
+    assert selective_pi_scale(q, 2000) == pytest.approx(1.5 / 2000 / 0.5)
+    with pytest.raises(ValueError, match="make it longer"):
+        selective_pi_scale(q, 2)
+
+
+def test_a_pi_member_without_its_operations_is_refused_by_name():
     bare = SimpleNamespace(name="qX", xy=SimpleNamespace(operations={}))
     with pytest.raises(ValueError, match="qX.*'x180'"):
-        pi_length_ns(bare)
-    ok = SimpleNamespace(name="qY", xy=SimpleNamespace(
-        operations={PI_OPERATION: SimpleNamespace(length=16)}))
-    assert pi_length_ns(ok) == 16
+        selective_pi_scale(bare, 2000)
 
 
 # ------------------------------------------------------------------ built on the live tree
@@ -112,7 +140,7 @@ def test_the_run_config_moves_the_tone_port_and_the_tree_does_not(machine, live_
     assert acquire.keywords["config"] is config
 
 
-def test_the_program_plays_the_tone_then_the_pi_in_one_arm(machine, live_roster):
+def test_the_program_plays_the_tone_then_the_selective_pi_in_one_arm(machine, live_roster):
     from qm import generate_qua_script
 
     exp = _experiment(machine, live_roster)
@@ -120,14 +148,20 @@ def test_the_program_plays_the_tone_then_the_pi_in_one_arm(machine, live_roster)
     script = generate_qua_script(prog, exp._config).replace(chr(34), chr(39))
     tone_q, pi_q = _qubits(machine, exp)
     tone_xy, pi_xy = tone_q.xy.name, pi_q.xy.name
-    pi_cycles = pi_length_ns(pi_q) // 4
+    scale = exp._selective_pi["amplitude_scale"]
+    assert scale == pytest.approx(selective_pi_scale(pi_q, 2000))
+    assert exp._selective_pi["amplitude"] == pytest.approx(
+        pulse_area_ns(pi_q.xy.operations["x180"]) / 2000)
     assert re.search(rf"update_frequency\('{re.escape(tone_xy)}', v\d+", script)
     assert f"update_frequency('{pi_xy}'" not in script
-    # the tone (10 us = 2500 cycles) in BOTH arms, the pi in one, a wait in the other
+    # the tone (10 us = 2500 cycles) in BOTH arms; the 2 us pi (500 cycles) in one
+    # arm, a wait as long in the other; no x180 anywhere
     assert script.count(f"play('saturation', '{tone_xy}', duration=2500)") == 2
-    assert script.count(f"play('{PI_OPERATION}', '{pi_xy}')") == 1
-    assert f"play('{PI_OPERATION}', '{tone_xy}')" not in script
-    assert f"wait({pi_cycles}, '{pi_xy}')" in script
+    pi_plays = re.findall(rf"play\('saturation'\*amp\(([0-9.e-]+)\), '{re.escape(pi_xy)}', "
+                          rf"duration=500\)", script)
+    assert len(pi_plays) == 1 and float(pi_plays[0]) == pytest.approx(scale, rel=1e-6)
+    assert "play('x180'" not in script
+    assert f"wait(500, '{pi_xy}')" in script
     for q in (tone_q, pi_q):
         assert script.count(f"'{q.resonator.name}'") >= 2   # read out in both arms
 

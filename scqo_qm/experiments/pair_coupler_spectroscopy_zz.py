@@ -2,8 +2,9 @@
 
 Per shot and tone frequency, two arms back to back (pi, then reference): reset both
 members -> align -> the tone member's xy plays ``saturation`` for the tone length at
-IF = f - LO -> align -> pi arm: the pi member's xy plays ``x180`` at its own drive
-frequency; reference arm: that element waits the x180's length -> align -> both
+IF = f - LO -> align -> pi arm: the pi member's xy plays the SELECTIVE pi - its
+``saturation`` operation scaled down and stretched to ``selective_pi_len_ns`` - at its
+own drive frequency; reference arm: that element waits as long -> align -> both
 members read out 2-level -> the four joint indicators. Loops: averages (outer) ->
 tone IF (in the order given) -> arm.
 
@@ -17,12 +18,16 @@ THE LINES: the tone rides on ``tone_on``'s drive element, the pi on the OTHER me
 run's own LO (``_coupler_tone.moved_lo_config``: the MW-FEM band switched with the
 port-pair partner when needed, the QUAM tree restored straight after the config is
 built); when the pi member IS that partner (5Q4C q1_q2: q2's tone on ``6/3``, q1's pi
-on ``6/2``) its port follows the band and keeps its LO, so its IF - and its x180 - are
-unchanged. ``patch_preview_config`` gives ``--preview`` the same config.
+on ``6/2``) its port follows the band and keeps its LO, so its IF - and its pulses -
+are unchanged. ``patch_preview_config`` gives ``--preview`` the same config.
 
-THE PI is the member's calibrated ``x180`` as it stands (user, 2026-09-27: try the
-gate first). A pi selective enough to be spoiled by a sub-MHz ZZ is the next step,
-not this one.
+THE SELECTIVE PI is a square pulse with the rotation AREA of the member's calibrated
+``x180`` (:func:`selective_pi_scale`), so it needs no calibration of its own. The area
+is the x180's sampled waveform summed with the pulse's own frame ``detuning`` undone:
+that detuning compensates the Stark shift of a strong 16 ns pulse, which a weak pulse
+microseconds long does not have (5Q4C q1: -8.7 MHz; undone, a 16 ns DragCosine of
+amplitude A sums to exactly 7.5 A ns). Played as the member's ``saturation`` with
+``amplitude_scale`` and ``duration`` - no new waveform in the config.
 """
 
 from __future__ import annotations
@@ -42,8 +47,10 @@ from scqo_qm.experiments._coupler_tone import (
     refuse_missing_thresholds,
 )
 
-#: the operation the pi member plays in the pi arm
-PI_OPERATION = "x180"
+#: the calibrated pulse whose rotation area the selective pi keeps
+PI_REFERENCE = "x180"
+#: the square operation the selective pi is played on
+SQUARE_OPERATION = "saturation"
 _CLOCK_NS = 4
 
 
@@ -54,6 +61,7 @@ def build_program(
     tone_ifs_hz: Sequence[int],
     tone_role: str,
     pi_ns: int,
+    pi_scale: float,
     tone_ns: int,
     num_shots: int,
     reset_type: str,
@@ -64,12 +72,15 @@ def build_program(
     ``tone_ifs_hz``: the tone's IF per point (Hz, relative to the tone port's LO in
     the config the program runs against), in the order to be swept.
     ``tone_role``: ``"control"`` / ``"target"`` - the member whose drive carries the
-    tone; the OTHER one plays :data:`PI_OPERATION`, ``pi_ns`` long (the reference
-    arm's wait).
+    tone; the OTHER one plays :data:`SQUARE_OPERATION` scaled by ``pi_scale`` for
+    ``pi_ns`` (the reference arm waits as long).
     """
     qp = qubit_pair
     if tone_role not in ("control", "target"):
         raise ValueError(f"tone_role must be control or target, got {tone_role!r}")
+    if not 0 < pi_scale < 1:
+        raise ValueError(f"pi_scale {pi_scale}: the selective pi is a scaled-DOWN "
+                         f"{SQUARE_OPERATION!r}, so it must lie in (0, 1)")
     for what, ns in (("pi", pi_ns), ("tone", tone_ns)):
         if ns < 16 or ns % _CLOCK_NS:
             raise ValueError(f"{what} of {ns} ns: needs a multiple of 4 ns from 16 ns up")
@@ -111,7 +122,8 @@ def build_program(
                     tone.xy.play("saturation", duration=tone_cycles)
                     align()
                     if pi_played:
-                        pi.xy.play(PI_OPERATION)
+                        pi.xy.play(SQUARE_OPERATION, amplitude_scale=float(pi_scale),
+                                   duration=pi_cycles)
                     else:
                         wait(pi_cycles, pi.xy.name)
                     align()
@@ -137,14 +149,39 @@ def build_program(
     return prog, sweep_axes
 
 
-def pi_length_ns(qubit) -> int:
-    """The pi member's :data:`PI_OPERATION` length (ns), refused by name when the
-    member has none."""
+def pulse_area_ns(pulse) -> float:
+    """A pulse's rotation area (amplitude x ns): its sampled waveform summed with the
+    pulse's own frame ``detuning`` undone (samples are 1 ns apart)."""
+    w = np.atleast_1d(np.asarray(pulse.calculate_waveform(), dtype=complex))
+    if w.size == 1:                                  # a constant waveform
+        w = np.full(int(pulse.length), w[0])
+    t = np.arange(w.size) * 1e-9
+    detuning = float(getattr(pulse, "detuning", 0.0) or 0.0)
+    return float(abs(np.sum(w * np.exp(-1j * 2 * np.pi * detuning * t))))
+
+
+def selective_pi_scale(qubit, length_ns: int) -> float:
+    """The ``amplitude_scale`` on the member's :data:`SQUARE_OPERATION` that gives a
+    square pulse ``length_ns`` long the rotation area of its :data:`PI_REFERENCE`.
+    Refused by name when either operation is missing or the pulse would have to be
+    louder than the square operation itself."""
     ops = getattr(qubit.xy, "operations", {}) or {}
-    if PI_OPERATION not in ops:
-        raise ValueError(f"{qubit.name}: pair_coupler_spectroscopy_zz plays the pi "
-                         f"member's {PI_OPERATION!r}, and its drive has none")
-    return int(ops[PI_OPERATION].length)
+    for op in (PI_REFERENCE, SQUARE_OPERATION):
+        if op not in ops:
+            raise ValueError(f"{qubit.name}: pair_coupler_spectroscopy_zz builds the "
+                             f"selective pi from the pi member's {op!r}, and its drive "
+                             f"has none")
+    area = pulse_area_ns(ops[PI_REFERENCE])
+    square = abs(float(ops[SQUARE_OPERATION].amplitude))
+    if not (np.isfinite(area) and area > 0 and square > 0):
+        raise ValueError(f"{qubit.name}: {PI_REFERENCE!r} has no usable area ({area}) or "
+                         f"{SQUARE_OPERATION!r} no amplitude ({square})")
+    scale = area / float(length_ns) / square
+    if scale >= 1:
+        raise ValueError(f"{qubit.name}: a {length_ns} ns selective pi needs "
+                         f"{scale:.2f} x the {SQUARE_OPERATION!r} amplitude; make it "
+                         f"longer")
+    return scale
 
 
 from scqo import register
@@ -174,7 +211,11 @@ class QMPairCouplerSpectroscopyZZ(JointPopulationMixin, PairCouplerSpectroscopyZ
         tone_role = role_side(self, p.tone_on, field="tone_on")
         tone_qubit, pi_qubit = ((qp.qubit_control, qp.qubit_target) if tone_role == "control"
                                 else (qp.qubit_target, qp.qubit_control))
-        pi_ns = pi_length_ns(pi_qubit)
+        pi_ns = int(p.selective_pi_len_ns)
+        pi_scale = selective_pi_scale(pi_qubit, pi_ns)
+        self._selective_pi = {"length_ns": pi_ns, "amplitude_scale": pi_scale,
+                              "amplitude": pi_scale * abs(float(
+                                  pi_qubit.xy.operations[SQUARE_OPERATION].amplitude))}
 
         lo = self.lo_hz()
         config, moved = moved_lo_config(machine, tone_qubit, lo_hz=lo, experiment=self.name)
@@ -184,7 +225,8 @@ class QMPairCouplerSpectroscopyZZ(JointPopulationMixin, PairCouplerSpectroscopyZ
         prog, axes = build_program(
             machine, qp,
             tone_ifs_hz=np.round(freqs - lo).astype(int),
-            tone_role=tone_role, pi_ns=pi_ns, tone_ns=int(p.tone_len_ns),
+            tone_role=tone_role, pi_ns=pi_ns, pi_scale=pi_scale,
+            tone_ns=int(p.tone_len_ns),
             num_shots=p.num_averages, reset_type=reset_type)
         sweep_axes = {
             "qubit_pair": xr.DataArray([pair]),
