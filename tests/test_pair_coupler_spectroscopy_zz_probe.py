@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from scqo_qm.experiments.pair_coupler_spectroscopy_zz import (
+from scqo_qm.experiments._selective_pi import (
     SQUARE_OPERATION,
     pulse_area_ns,
     selective_pi_scale,
@@ -164,6 +164,24 @@ def test_the_program_plays_the_tone_then_the_selective_pi_in_one_arm(machine, li
     assert f"wait(500, '{pi_xy}')" in script
     for q in (tone_q, pi_q):
         assert script.count(f"'{q.resonator.name}'") >= 2   # read out in both arms
+
+
+def test_a_pi_member_the_band_switch_would_park_is_refused(machine, live_roster):
+    """BACKLOG I29: when the tone's band switch cannot hold its port-pair partner's
+    LO, moved_lo_config parks the partner at the band floor - and when that partner
+    is the PI member, its selective pi would play there. Refused by name, before any
+    QUA is built, and the tree is left as it was."""
+    exp = _experiment(machine, live_roster)
+    _tone_q, pi_q = _qubits(machine, exp)
+    port = pi_q.xy.opx_output
+    old = port.upconverter_frequency
+    port.upconverter_frequency = 4.0e9          # band 1 only: band 2 cannot hold it
+    try:
+        with pytest.raises(ValueError, match="parked at the band floor"):
+            exp.probe()
+        assert port.upconverter_frequency == 4.0e9
+    finally:
+        port.upconverter_frequency = old
 
 
 def test_tone_on_picks_the_line_and_the_pi_goes_to_the_other(machine, live_roster):

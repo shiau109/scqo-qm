@@ -36,9 +36,13 @@ scqo_qm/
                          #   the flux one knob-free, the probes' z door) + QMFluxLine (a
                          #   flux LINE's idle_flux/flux_delay_s, SCQO 4.0.0) + QMOperation
                          #   (a declared <pair>.<op> over its QUAM gate macro); a BORROWED
-                         #   channel is a KeyError until the state adopts an element for
-                         #   it; line_ports() labels each roster line's output for
-                         #   `scqo state`; acquire()/preview() live here
+                         #   channel (xy2.q1_q2_c) is QMBorrowedDriveChannel over the
+                         #   element adopt-channel filed under its address in
+                         #   machine.borrowed_channels - pulse knobs only, a missing op
+                         #   raises, drive power refused (I28) - and a KeyError naming
+                         #   adopt-channel until then; line_ports() labels each roster
+                         #   line's output for `scqo state`; acquire()/preview() live here;
+                         #   power_context reports a routed run's borrowed port and member
     fieldmap.py          # declarative neutral->vendor field catalog (pure data, per channel
                          #   kind) + VENDOR_ONLY, whose coupled/edit/counterpart carry the
                          #   OPERATIONAL half of a hand edit (what moves with it, what to
@@ -94,6 +98,14 @@ scqo_qm/
                          #   new IF, or a cold start. Results land in calibration_db.json,
                          #   OUTSIDE state.json - so vendor_config_snapshot cannot capture
                          #   them, and power_context records the digest instead.
+    adopt_channel.py     # operator CLI: scqo-qm adopt-channel <line>.<target> --lo-hz -
+                         #   MW-FEM only: realize a BORROWED drive channel as an MWChannel
+                         #   on the line's port, UPCONVERTER 2 (the port moves to the
+                         #   `upconverters` dict form; the band follows with its pair
+                         #   partner, which is never parked), x180/x90 cosines 200 ns at
+                         #   0.25/0.125, tuned to the target's f_01_hz. Same staged-save
+                         #   discipline as register-partial-swap; --list / --dry-run look
+                         #   first. SCQO docs/coupler-transmon-plan.md section 2
     register_partial_swap.py  # operator CLI: scqo-qm register-partial-swap
                          #   - add or retune a square partial swap on one pair of the
                          #   active setup: control z pulse + coupler pulse
@@ -119,6 +131,15 @@ scqo_qm/
     _qc_populations.py   # shared swap-reset population math
     _readout_fidelity.py # shared SSRO builder (single_shot_readout / thermal_population)
     _resonator_spectroscopy.py  # shared 1D builder (resonator_spectroscopy / _power_chain)
+    _coupler_tone.py     # the coupler tone's run-scoped LO move (moved_lo_config): only
+                         #   the tone element's OWN upconverter moves, and a band switch
+                         #   that would strand another upconverter is refused by name
+    _selective_pi.py     # a member's x180 area as a long square pulse (zz + the map)
+    _mapped_target.py    # MappedTarget: a transmon-shaped handle for a target driven
+                         #   through a named line and/or read through a pair member
+                         #   (drive_line / readout_member) - xy = the adopted element,
+                         #   readout_state = selective pi + x180 + the member's readout -
+                         #   so a qubit carrier's program body runs unchanged
   _family.py             # which hardware family a channel declares - duck-typed, never
                          #   isinstance (the suite builds channels as SimpleNamespace and
                          #   pins the flux guards against a port that is None). TWO
@@ -127,6 +148,11 @@ scqo_qm/
                          #   (lf_fem / opx_plus). An OPX1000 can drive an Octave, so the
                          #   chassis is the wrong thing to branch on. Unknown reports as
                          #   None and is never promoted to a family
+  _mw_fem.py             # what an MW-FEM port IS: the band table, the port-pair rule,
+                         #   the 250 MHz IF convention, and the port's LO in EITHER
+                         #   spelling (upconverter_frequency, or the upconverters dict
+                         #   once a channel is adopted - qm-qua refuses both). Nothing
+                         #   reads the scalar directly: port_los/port_lo/set_port_lo
   _octave.py             # what an Octave IS: the LO grid, the +/-400 MHz IF window, the
                          #   DAC ceiling, the SHARED synthesizers (synth2 drives RF2+RF3
                          #   from one source - no MW-FEM analogue). Facts only; the policy
@@ -153,7 +179,10 @@ scqo_qm/
                          #   ParametricReset - PERSISTED as __class__ in state.json: moving or
                          #   renaming them requires scripts/migrate_state_scqo_qm.py-style care)
   quam_builder/          # lab QUAM classes (MixedTransmonQuam root, Thermalizing* transmons -
-                         #   ALSO persisted as __class__ in state.json)
+                         #   ALSO persisted as __class__ in state.json). The root carries
+                         #   borrowed_channels {<scqo address>: MWChannel}, written only by
+                         #   adopt-channel and dropped from to_dict() while empty, so a
+                         #   tree that adopts nothing saves exactly as before
 quam_config/             # QUAM class entrypoint (my_quam.py: Quam(MixedTransmonQuam)) + the
                          #   register_* scripts that materialize lab operations into a state
 quam_state/              # serialized instrument config (state.json/wiring.json; gitignored);
@@ -377,6 +406,9 @@ qualibrate_config computes its path once, at import).
 | `test_cluster.py` | the read-only `scqo-qm cluster` query: QOP 3.x rows + the QOP 2.x fallback, never a close/halt, an unreadable QM never reads as idle (doubles, no cluster) | yes |
 | `test_cli.py` | the `scqo-qm` dispatcher: every OPERATOR_COMMANDS entry reachable under its subcommand, the console script declared | yes |
 | `test_register_partial_swap.py` | the partial-swap operator CLI on a COPY of the live quam_state: the three entries land and nothing else moves; every refusal (name contract, clipping amplitude, an edit that landed on disk after loading) leaves the folder untouched | yes |
+| `test_adopt_channel.py` | the adopt-channel operator CLI on a COPY of the live quam_state: one element on upconverter 2, only the port pair's band/LO form moves, the line qubit keeps its IF, the borrowed view serves it; every refusal leaves the folder untouched | yes |
+| `test_coupler_power_rabi_probe.py` | `qubit_power_rabi` on an adopted coupler: drive on the borrowed element, then the map (selective pi, x180) and the member's readout, in that order on generated QUA; drive_line alone; power_context; the coupler tone and broadband on a two-upconverter port | yes |
+| `test_mw_fem.py` | `_mw_fem`: both LO spellings, the port-pair rule, no retune may create an upconverter | no |
 | `test_experiment_surface.py` | `_vendor.py` — the one door out of the neutral surface | yes |
 | `test_qm_backend.py` | entity surface on the stub; builder-vs-class mapping equivalence, baked-config self-acquisition, active-reset + tracker builds on the LIVE quam_state; preview; `vendor_config_snapshot` (pure split, stub degrade, live-state parsed equality) | yes |
 | `test_sequential_probe.py` | the BACKEND-PARITY half: qubit_spectroscopy's drive/readout timing in both `readout_overlap` modes, asserted on generated QUA (quote-agnostic vs qm versions) | yes |

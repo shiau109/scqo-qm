@@ -590,6 +590,152 @@ class QMDriveChannel(_QMChannelView, make_view_base("drive")):
             name=self.name, field="drive_power_dbm")
 
 
+class _XyHolder:
+    """A one-attribute stand-in for a QUAM qubit: ``quam_fields``' x180/x90 helpers
+    address ``q.xy.operations``, and an adopted borrowed channel IS such an ``xy``."""
+
+    __slots__ = ("xy",)
+
+    def __init__(self, xy: Any) -> None:
+        self.xy = xy
+
+
+class QMBorrowedDriveChannel(QMDriveChannel):
+    """A BORROWED drive channel (``xy2.q1_q2_c``) over the element the QUAM state
+    ADOPTED for it: ``machine.borrowed_channels[<address>]``, a plain MWChannel on
+    the line's port, on that port's second upconverter (``scqo-qm adopt-channel``;
+    SCQO docs/coupler-transmon-plan.md section 2).
+
+    Serves the pulse knobs ON that element: ``drive_freq_hz`` is its
+    ``RF_frequency`` (there is no qubit ``f_01`` behind it), ``pi_amp`` /
+    ``pi_amp_x90`` / ``pi_duration_s`` / ``drag_beta`` / ``drag_beta_x90`` its
+    ``x180`` / ``x90`` - through the same ``quam_fields`` helpers the designed view
+    uses, handed the element as the ``xy``. Unlike those helpers, a missing
+    operation is an error here, never a silent 0.0 or a dropped write. Not served:
+    ``drive_amp`` / ``drive_power_dbm`` (no saturation operation, and the port's
+    full scale is SHARED with the line's designed channel - a power write would
+    move it too, BACKLOG I28) and the target-owned ``thermalization_time_s``, which
+    the roster never gives a borrowed channel anyway.
+    """
+
+    def __init__(self, name: str, element: Any) -> None:
+        super().__init__(name, _XyHolder(element), element)
+
+    def _require(self, *operations: str) -> None:
+        ops = getattr(self._vendor, "operations", None) or {}
+        missing = [op for op in operations if op not in ops]
+        if missing:
+            raise KeyError(
+                f"{self.name}: the adopted element has no {missing} operation(s) "
+                f"(it carries {sorted(ops)}); re-adopt it with scqo-qm adopt-channel")
+
+    @property
+    def drive_freq_hz(self) -> float:
+        rf = getattr(self._vendor, "RF_frequency", None)
+        return None if rf is None else float(rf)
+
+    @drive_freq_hz.setter
+    def drive_freq_hz(self, value: float) -> None:
+        from scqo_qm._mw_fem import MAX_IF_HZ
+
+        lo = float(self._vendor.LO_frequency)
+        if abs(float(value) - lo) > MAX_IF_HZ:
+            raise ValueError(
+                f"{self.name}.drive_freq_hz={float(value) / 1e9:.6g} GHz lies "
+                f"{(float(value) - lo) / 1e6:+.0f} MHz from its upconverter's LO "
+                f"({lo / 1e9:.6g} GHz), past the +-{MAX_IF_HZ / 1e6:.0f} MHz IF "
+                f"window; re-adopt it with an LO nearer the target")
+        self._vendor.RF_frequency = float(value)
+
+    @property
+    def pi_amp(self) -> float:
+        self._require("x180")
+        return QMDriveChannel.pi_amp.fget(self)
+
+    @pi_amp.setter
+    def pi_amp(self, value: float) -> None:
+        self._require("x180")
+        QMDriveChannel.pi_amp.fset(self, value)
+
+    @property
+    def pi_amp_x90(self) -> float:
+        self._require("x90")
+        return QMDriveChannel.pi_amp_x90.fget(self)
+
+    @pi_amp_x90.setter
+    def pi_amp_x90(self, value: float) -> None:
+        self._require("x90")
+        QMDriveChannel.pi_amp_x90.fset(self, value)
+
+    @property
+    def pi_duration_s(self) -> float:
+        self._require("x180")
+        return QMDriveChannel.pi_duration_s.fget(self)
+
+    @pi_duration_s.setter
+    def pi_duration_s(self, value: float) -> None:
+        self._require("x180", "x90")
+        QMDriveChannel.pi_duration_s.fset(self, value)
+        # one length for the pair: the adopted x90 is not a vendor-tuned sibling
+        # of the x180, it was created beside it and follows it
+        quam_fields.set_pi_duration(self._q, value, operation="x90")
+
+    @property
+    def drag_beta(self) -> float:
+        self._require("x180")
+        return QMDriveChannel.drag_beta.fget(self)
+
+    @drag_beta.setter
+    def drag_beta(self, value: float) -> None:
+        self._require("x180")
+        QMDriveChannel.drag_beta.fset(self, value)
+
+    @property
+    def drag_beta_x90(self) -> float:
+        self._require("x90")
+        return QMDriveChannel.drag_beta_x90.fget(self)
+
+    @drag_beta_x90.setter
+    def drag_beta_x90(self, value: float) -> None:
+        self._require("x90")
+        QMDriveChannel.drag_beta_x90.fset(self, value)
+
+    def _unrealized(self, field: str):
+        raise NotImplementedError(
+            f"{self.name}.{field}: not realized on a borrowed channel - it has no "
+            f"saturation operation, and its port's full scale is shared with the "
+            f"line's designed channel (a power write would move that one too, "
+            f"BACKLOG I28)")
+
+    @property
+    def drive_amp(self) -> float:
+        self._unrealized("drive_amp")
+
+    @drive_amp.setter
+    def drive_amp(self, value: float) -> None:
+        self._unrealized("drive_amp")
+
+    @property
+    def drive_power_dbm(self) -> float:
+        self._unrealized("drive_power_dbm")
+
+    @drive_power_dbm.setter
+    def drive_power_dbm(self, value: float) -> None:
+        self._unrealized("drive_power_dbm")
+
+    @property
+    def thermalization_time_s(self) -> float:
+        raise NotImplementedError(
+            f"{self.name}.thermalization_time_s belongs to the target itself, not to "
+            f"a borrowed route to it")
+
+    @thermalization_time_s.setter
+    def thermalization_time_s(self, value: float) -> None:
+        raise NotImplementedError(
+            f"{self.name}.thermalization_time_s belongs to the target itself, not to "
+            f"a borrowed route to it")
+
+
 class QMFluxChannel(_QMChannelView, make_view_base("flux")):
     """The scqo FLUX channel view (``z1.q1``, ``zc12.q1_q2_c``) over a flux
     source: KNOB-FREE since 4.0.0. The channel's fields are the target's
@@ -992,12 +1138,24 @@ class QMDeviceModel(DeviceModel):
         qubit, element = self._flux_element(name, flux[0].target[0])
         return QMFluxLine(name, qubit, element)
 
-    def _channel_view(self, name: str, e: Channel) -> EntityView:
-        if e.borrowed:
+    def _borrowed_view(self, name: str, e: Channel) -> EntityView:
+        """A BORROWED channel is realized by the element the QUAM state adopted
+        for it, filed under its scqo ADDRESS in ``machine.borrowed_channels``
+        (``scqo-qm adopt-channel``). KeyError - and only KeyError, which is what
+        ``_realized`` catches - naming that command otherwise."""
+        adopted = getattr(self._machine, "borrowed_channels", None) or {}
+        element = adopted.get(name) if hasattr(adopted, "get") else None
+        if element is None:
             raise KeyError(
                 f"{name!r} is a BORROWED channel ({e.kind} of {e.target[0]!r} "
                 f"through line {e.line!r}) and this QUAM state holds no element "
-                f"realizing it - the vendor config must adopt it first")
+                f"realizing it - adopt it first: scqo-qm adopt-channel {name} "
+                f"--lo-hz <Hz>")
+        return QMBorrowedDriveChannel(name, element)
+
+    def _channel_view(self, name: str, e: Channel) -> EntityView:
+        if e.borrowed:
+            return self._borrowed_view(name, e)
         view_cls = _CHANNEL_VIEWS.get(e.kind)
         if view_cls is None:
             raise KeyError(
@@ -1136,6 +1294,27 @@ class QMDeviceModel(DeviceModel):
         return state
 
 
+def _routes_of(experiment: "Experiment") -> dict[str, dict[str, str]]:
+    """``{target: {"drive_channel": <address>, "readout_member": <mode>}}`` for a
+    run whose Parameters drive or read its targets through another route than
+    their own (the ``drive_line`` / ``mapped_readout`` capabilities); empty
+    otherwise. Read by name - the fields exist only on their carriers."""
+    params = getattr(experiment, "params", None)
+    line = getattr(params, "drive_line", None)
+    member = getattr(params, "readout_member", None)
+    if line is None and member is None:
+        return {}
+    routes: dict[str, dict[str, str]] = {}
+    for target in list(getattr(params, "targets", None) or []):
+        route: dict[str, str] = {}
+        if line is not None:
+            route["drive_channel"] = f"{line}.{target}"
+        if member is not None:
+            route["readout_member"] = member
+        routes[target] = route
+    return routes
+
+
 def _progress_shot_total(experiment: "Experiment") -> int:
     """Denominator for the acquisition progress counter.
 
@@ -1175,6 +1354,12 @@ class QMBackend(Backend):
         self._roster = roster
         self._device = QMDeviceModel(machine, roster, state_dir=state_dir)
         self._timeout = timeout
+        #: target -> {"drive_channel": <address>, "readout_member": <mode>} for the
+        #: run acquire() last started, when its Parameters named another route
+        #: than the target's own (docs/coupler-transmon-plan.md). Set by acquire(),
+        #: CONSUMED by the power_context() the Session calls right after the run,
+        #: so it can never describe a later run.
+        self._routes: dict[str, dict[str, str]] = {}
 
     @classmethod
     def load(cls, *, roster: "Roster", state_path: str,
@@ -1269,7 +1454,7 @@ class QMBackend(Backend):
 
         Scoped to what this tree can actually reach, because an inventory whose
         whole purpose is DISCOVERY must not advertise a door that is walled up.
-        Two commands are chain-specific:
+        Three commands are chain-specific:
 
         * ``apply_distortion`` writes an LF-FEM ``exponential_filter``. On a tree
           whose flux lines are all OPX+ analog outputs there is no such field, so
@@ -1278,6 +1463,8 @@ class QMBackend(Backend):
         * ``calibrate_octave`` calibrates an analog up-conversion mixer. A tree
           with no Octave has no mixer, and the vendor call would raise naming the
           element rather than the reason.
+        * ``adopt_channel`` puts a borrowed drive channel on an MW-FEM port's
+          second upconverter. A tree with no MW-FEM drive has no such port.
 
         The tuple is otherwise returned as-is, unlike ``vendor_only``'s defensive
         ``dict()``: a tuple of frozen dataclasses is already immutable, and
@@ -1294,6 +1481,8 @@ class QMBackend(Backend):
             hidden.add("apply_distortion")
         if RF_OCTAVE not in families["rf_chain"]:
             hidden.add("calibrate_octave")
+        if RF_MW_FEM not in families["rf_chain"]:
+            hidden.add("adopt_channel")
         if not hidden:
             return OPERATOR_COMMANDS
         return tuple(c for c in OPERATOR_COMMANDS if c.name not in hidden)
@@ -1467,8 +1656,15 @@ class QMBackend(Backend):
         because a bare ``{}`` there is indistinguishable from the first case, and
         that is precisely what an Octave tree used to write for every qubit of every
         run: provenance that never failed and never said anything either.
+
+        A target the run drove through a named line or read through a pair member
+        (``drive_line`` / ``readout_member``, recorded by :meth:`acquire` and
+        consumed here) reports THOSE chains: the member's readout, and the borrowed
+        channel's port, upconverter LO and the port's full scale - the power its
+        ``pi_amp`` is a fraction of, shared with the line's designed channel.
         """
         cal_cache: dict = {}
+        routes, self._routes = self._routes, {}
 
         def view_or_none(name: str, kind: str):
             """The target's default channel view, or None when it serves no such one."""
@@ -1480,7 +1676,8 @@ class QMBackend(Backend):
         out: dict = {}
         for name in qubits:
             out[name] = {}
-            readout_view = view_or_none(name, "readout")
+            route = routes.get(name, {})
+            readout_view = view_or_none(route.get("readout_member", name), "readout")
             try:
                 if readout_view is None:
                     raise LookupError("no readout channel for this target")
@@ -1513,8 +1710,13 @@ class QMBackend(Backend):
                 out[name] = {}
             except Exception as exc:  # provenance must never fail a run
                 out[name]["readout_unavailable"] = f"{type(exc).__name__}: {exc}"
+            if "readout_member" in route:
+                out[name]["readout_member"] = route["readout_member"]
             # The drive chain behind drive_power_dbm — same never-fail rule, and
             # independent of the readout block.
+            if "drive_channel" in route:
+                out[name].update(self._borrowed_drive_context(route["drive_channel"]))
+                continue
             drive_view = view_or_none(name, "drive")
             try:
                 if drive_view is None:
@@ -1537,6 +1739,24 @@ class QMBackend(Backend):
                 out[name]["drive_unavailable"] = f"{type(exc).__name__}: {exc}"
         return out
 
+    def _borrowed_drive_context(self, address: str) -> dict[str, Any]:
+        """The drive chain of a channel the run named (``drive_line``): its
+        address, port, RF chain, LO and the port's coarse power knob. No
+        saturation block - the channel plays only its pulses. Never raises."""
+        block: dict[str, Any] = {"drive_channel": address}
+        try:
+            xy = self._device.component(address).vendor
+            block["drive_port"] = port_label(xy)
+            block["drive_rf_chain"] = rf_chain(xy) or "unknown"
+            lo = getattr(xy, "LO_frequency", None)
+            if lo is not None:
+                block["drive_lo_freq_hz"] = float(lo)
+            block.update(_coarse_power_knob(
+                xy, name=address, field="drive_power_dbm", prefix="drive_"))
+        except Exception as exc:  # provenance must never fail a run
+            block["drive_unavailable"] = f"{type(exc).__name__}: {exc}"
+        return block
+
     def acquire(self, experiment: "Experiment") -> xr.Dataset:
         # The reset-method backstop. Every shell resolves reset_method through
         # check_reset_method in its probe(), but only if it remembers to; this
@@ -1547,6 +1767,9 @@ class QMBackend(Backend):
         from scqo_qm.experiments._reset import check_reset_method
         check_reset_method(experiment)
         from scqo_qm.experiments._lib import acquire as run_acquire
+
+        # which channel drove / which member read each target, for power_context
+        self._routes = _routes_of(experiment)
 
         # Progress denominator: per-shot experiments (single_shot_readout) declare
         # `num_shots` instead of the averaging mixin's `num_averages`; a

@@ -496,7 +496,10 @@ VENDOR_ONLY_MW_FEM: dict[str, VendorOnly] = {
     "drive_upconverter_frequency": VendorOnly(
         path="q.xy.opx_output.upconverter_frequency", unit="Hz", kind="vendor",
         doc="drive LO - PORT-level MW-FEM upconverter, shared by everything on "
-            "that output",
+            "that output. A port carrying an adopted borrowed channel spells it "
+            "upconverters.1.frequency instead (upconverters.2 is the adopted "
+            "channel's LO) and leaves upconverter_frequency null - qm-qua refuses both "
+            "(scqo_qm/_mw_fem.py reads either)",
         coupled=("drive_band",),
         edit="keep IF = f_01 - LO in range and drive_band matching"),
     "downconverter_frequency": VendorOnly(
@@ -523,8 +526,8 @@ VENDOR_ONLY_MW_FEM: dict[str, VendorOnly] = {
         coupled=("readout_upconverter_frequency",),
         edit="state.json ports.mw_outputs.<con>.<fem>.<port>.band, offline with "
              "QUAM tools. The MW-FEM pairs ports (2,3) (4,5) (6,7) and BOTH "
-             "ports of a pair must carry the same band (see experiments/"
-             "broadband_qubit_spectroscopy.py::_partner_port_id); "
+             "ports of a pair must carry the same band (see "
+             "scqo_qm/_mw_fem.py::partner_port_id); "
              "quam_config/populate_quam_lf_mw_fems.py::get_band(freq) is the "
              "derivation the lab seeds from"),
     "drive_band": VendorOnly(
@@ -726,6 +729,24 @@ def vendor_only_for(rf_chains) -> dict[str, VendorOnly]:
 #: VENDOR_ONLY, and this module's import guard is what proves it stays
 #: vendor-free. Every string below compresses the target module's own docstring.
 OPERATOR_COMMANDS: tuple[OperatorCommand, ...] = (
+    OperatorCommand(
+        name="adopt_channel",
+        command="scqo-qm adopt-channel <line>.<target> --lo-hz <Hz>",
+        doc="MW-FEM trees only. ADOPT a borrowed drive channel (e.g. xy2.q1_q2_c, a "
+            "coupler driven through q2's xy wire): add an element for it on the line's "
+            "port, on that port's second upconverter at --lo-hz, tuned to the target's "
+            "measured f_01_hz, with x180/x90 cosine pulses (DRAG off; --length-ns 200, "
+            "--pi-amp 0.25 and half). The port moves to the two-upconverter form and, "
+            "when its band cannot hold both LOs, to a band that can, together with its "
+            "port-pair partner. Until then scqo refuses the channel by name. The live "
+            "state.json is replaced only after a staged save proves nothing else "
+            "changes. Fully offline.",
+        options="--freq-hz HZ (default: the target's f_01_hz)  --length-ns NS  "
+                "--pi-amp A  --list (show the drive ports and adopted channels, write "
+                "nothing)  --dry-run  --config PATH",
+        caution="Changes the port pair's band and LO form for EVERY element on it - "
+                "re-check those qubits (qubit_power_rabi) afterwards. Writes the "
+                "setup's live state.json, so run it between measurements."),
     OperatorCommand(
         name="apply_distortion",
         command="scqo-qm apply-distortion --target <target> [--run <run_id>]",

@@ -38,8 +38,8 @@ import xarray as xr
 from qm.qua import *
 from qualang_tools.loops import from_array
 
+from scqo_qm._mw_fem import MAX_IF_HZ
 from scqo_qm.experiments._coupler_tone import (
-    MAX_IF_HZ,
     acquire,
     moved_lo_config,
     refuse_missing_thresholds,

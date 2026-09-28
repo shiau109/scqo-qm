@@ -252,8 +252,61 @@ def test_a_borrowed_channel_is_refused_until_the_vendor_adopts_it(backend, roste
     view = device.channel_on("xy2", "q1_q2_c")
     with pytest.raises(KeyError, match="no value yet"):
         _ = view.pi_amp
-    with pytest.raises(KeyError, match="adopt"):
+    with pytest.raises(KeyError, match="scqo-qm adopt-channel xy2.q1_q2_c"):
         view.pi_amp = 0.2
+
+
+def _adopted(stub_machine, *, ops=("x180", "x90")):
+    """An adopted element for xy2.q1_q2_c on the stub tree, filed where
+    ``scqo-qm adopt-channel`` files it: ``borrowed_channels[<address>]``."""
+    from conftest import Pulse
+
+    element = SimpleNamespace(
+        name="xy2.q1_q2_c", RF_frequency=7.05e9, LO_frequency=7.1e9, upconverter=2,
+        opx_output=SimpleNamespace(full_scale_power_dbm=7),
+        operations={op: Pulse(amplitude=0.25 if op == "x180" else 0.125,
+                              length=200, alpha=0.0) for op in ops})
+    stub_machine.borrowed_channels = {"xy2.q1_q2_c": element}
+    return element
+
+
+def test_an_adopted_borrowed_channel_is_served_on_its_own_element(stub_machine, roster):
+    """Once the tree files an element under the address, the channel is realized:
+    the pulse knobs read and write THAT element (never the line's qubit), the two
+    unrealized knobs refuse by name, and the inventory and the pull seed list it."""
+    from scqo_qm.backend.qm_backend import QMBackend, QMBorrowedDriveChannel
+
+    element = _adopted(stub_machine)
+    backend = QMBackend(stub_machine, roster=roster)
+    view = backend.device.component("xy2.q1_q2_c")
+    assert isinstance(view, QMBorrowedDriveChannel) and view.vendor is element
+    assert (view.pi_amp, view.pi_amp_x90, view.drive_freq_hz) == (0.25, 0.125, 7.05e9)
+    view.pi_amp = 0.3
+    assert element.operations["x180"].amplitude == 0.3
+    assert stub_machine.qubits["q2"].xy.operations["x180"].amplitude == 0.2  # untouched
+    for field in ("drive_amp", "drive_power_dbm", "thermalization_time_s"):
+        with pytest.raises(NotImplementedError):
+            getattr(view, field)
+    with pytest.raises(ValueError, match="IF window"):
+        view.drive_freq_hz = 7.5e9
+    assert "xy2.q1_q2_c" in backend.device.components()
+    assert backend.device.snapshot()["xy2.q1_q2_c"]["pi_amp"] == 0.3
+    # the other borrowed channels stay refused
+    with pytest.raises(KeyError, match="adopt"):
+        backend.device.component("xy1.q2")
+
+
+def test_an_adopted_channel_missing_an_operation_refuses_loudly(stub_machine, roster):
+    """quam_fields' qubit helpers read 0.0 and drop a write when an operation is
+    absent; on an adopted element that is a refusal, never a silent value."""
+    from scqo_qm.backend.qm_backend import QMBackend
+
+    _adopted(stub_machine, ops=("x180",))
+    view = QMBackend(stub_machine, roster=roster).device.component("xy2.q1_q2_c")
+    with pytest.raises(KeyError, match=r"no \['x90'\] operation"):
+        _ = view.pi_amp_x90
+    with pytest.raises(KeyError, match=r"no \['x90'\] operation"):
+        view.pi_amp_x90 = 0.1
 
 
 def test_component_names_the_missing_subtree_on_a_fixed_frequency_qubit(backend,

@@ -29,9 +29,12 @@ On an OCTAVE the band machinery does not apply -- there are no Nyquist bands
     stricter one: the MW-FEM pairs ports only for their band and each keeps its
     own upconverter_frequency.
 
-A chain this probe cannot bound is REFUSED rather than run with open LO limits.
+A chain this probe cannot bound is REFUSED rather than run with open LO limits,
+and so is a drive port pair that carries a SECOND upconverter (an adopted borrowed
+channel, ``scqo-qm adopt-channel``): this probe re-parks each port's one LO per
+segment and does not carry a second one through its band switches.
 
-MW-FEM band definitions (lo = upconverter_frequency range):
+MW-FEM band definitions (lo = upconverter_frequency range; ``scqo_qm._mw_fem``):
   Band 1: LO 0.05 – 5.5  GHz, recommended for RF < 5.0 GHz
   Band 2: LO 4.5  – 7.5  GHz, recommended for RF 5.0 – 7.0 GHz
   Band 3: LO 6.5  – 10.5 GHz, recommended for RF > 7.0 GHz
@@ -45,6 +48,13 @@ import numpy as np
 import xarray as xr
 
 from scqo_qm._family import RF_OCTAVE, rf_chain
+from scqo_qm._mw_fem import (
+    MAX_IF_HZ,
+    MW_FEM_BANDS,
+    partner_port_id,
+    port_info,
+    second_upconverter,
+)
 from scqo_qm._octave import (
     IF_MAX_ABS_HZ,
     LO_MAX_HZ,
@@ -57,22 +67,14 @@ from scqo import register
 from scqo.experiments import BroadbandQubitSpectroscopy
 
 # ---------------------------------------------------------------------------
-# MW-FEM band table: band -> (lo_min, lo_max)
+# MW-FEM band table, IF ceiling and port pairs: scqo_qm._mw_fem. The IF ceiling
+# (MAX_IF_HZ) is a repo convention, not a vendor bound; the Octave's equivalent is
+# the hardware's own +/-400 MHz (scqo_qm._octave.IF_MAX_ABS_HZ), which is why the
+# two are not one constant.
 # ---------------------------------------------------------------------------
-#: The IF ceiling this probe sweeps within on an MW-FEM (Hz). A repo
-#: convention, not a vendor bound -- nothing in qm/quam checks it. The Octave's
-#: equivalent is the hardware's own +/-400 MHz (scqo_qm._octave.IF_MAX_ABS_HZ),
-#: which is why the two are not one constant.
-_MW_FEM_MAX_IF_HZ = 250.0e6
-
-_MW_FEM_BANDS: dict[int, tuple[float, float]] = {
-    1: (0.05e9, 5.5e9),
-    2: (4.5e9,  7.5e9),
-    3: (6.5e9,  10.5e9),
-}
 
 # Non-overlapping RF segments for cross-band scanning.
-# Band 2 is included because port-pair switching (see _partner_port_id) ensures
+# Band 2 is included because port-pair switching (see _mw_fem.partner_port_id) ensures
 # that both ports in a pair (2,3)(4,5)(6,7) are always set to the same band,
 # satisfying the QM FEM constraint.
 #
@@ -118,39 +120,6 @@ def _restore_drive_channel(xy, *, band, mw_lo, octave_lo, rf) -> None:
         xy.RF_frequency = rf
 
 
-def _get_port_info(opx_out) -> tuple[str, int, int] | None:
-    """Return (controller, fem, port_id) from an opx_output object, or None.
-
-    Tries several common QuAM attribute names so the helper is robust across
-    different QuAM versions.
-    """
-    ctrl = (
-        getattr(opx_out, "controller_id", None)
-        or getattr(opx_out, "controller", None)
-    )
-    fem = (
-        getattr(opx_out, "fem_id", None)
-        or getattr(opx_out, "fem", None)
-    )
-    port = (
-        getattr(opx_out, "port_id", None)
-        or getattr(opx_out, "port", None)
-    )
-    if ctrl is None or fem is None or port is None:
-        return None
-    return (str(ctrl), int(fem), int(port))
-
-
-def _partner_port_id(port_id: int) -> int:
-    """Return the port that is paired with port_id under the MW-FEM constraint.
-
-    QM MW-FEM requires that port pairs (2,3) (4,5) (6,7) always share the same
-    band.  Even-numbered ports are paired with the next odd port; odd ports with
-    the previous even port.
-    """
-    return port_id + 1 if port_id % 2 == 0 else port_id - 1
-
-
 def _build_slices(
     start: float,
     stop: float,
@@ -177,9 +146,9 @@ def _build_slices(
             seg_stop = min(stop, seg_rf_max)
             if seg_start >= seg_stop:
                 continue
-            if seg_band not in _MW_FEM_BANDS:
+            if seg_band not in MW_FEM_BANDS:
                 continue
-            lo_min, lo_max = _MW_FEM_BANDS[seg_band]
+            lo_min, lo_max = MW_FEM_BANDS[seg_band]
             active_segs.append((seg_band, seg_start, seg_stop, lo_min, lo_max))
     else:
         active_segs = [(current_band or 0, start, stop, current_min_lo, current_max_lo)]
@@ -272,8 +241,8 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
         is_octave = chain == RF_OCTAVE
         if is_octave:
             single_lo_min, single_lo_max = LO_MIN_HZ, LO_MAX_HZ
-        elif current_band in _MW_FEM_BANDS:
-            single_lo_min, single_lo_max = _MW_FEM_BANDS[current_band]
+        elif current_band in MW_FEM_BANDS:
+            single_lo_min, single_lo_max = MW_FEM_BANDS[current_band]
         else:
             raise ValueError(
                 f"{primary_target}: this probe steps the drive LO, and the LO "
@@ -288,7 +257,7 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
         # port). The ceiling is the CHAIN's: the Octave carries +/-400 MHz of real
         # analog IF, against the MW-FEM convention of 250 MHz.
         min_if = max(50.0e6, gap / 2.0)
-        max_if = min(IF_MAX_ABS_HZ if is_octave else _MW_FEM_MAX_IF_HZ,
+        max_if = min(IF_MAX_ABS_HZ if is_octave else MAX_IF_HZ,
                      min_if + bw)
         span_per_lo = max_if - min_if
 
@@ -312,19 +281,35 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
             for target_name in targets:
                 opx_out = getattr(getattr(machine.qubits[target_name], "xy", None), "opx_output", None)
                 if opx_out is not None:
-                    info = _get_port_info(opx_out)
+                    info = port_info(opx_out)
                     if info is not None:
                         ctrl, fem, port = info
                         target_fem_ports.add(info)                              # target itself
-                        target_fem_ports.add((ctrl, fem, _partner_port_id(port)))  # its pair partner
+                        target_fem_ports.add((ctrl, fem, partner_port_id(port)))  # its pair partner
 
             if target_fem_ports:
                 for q_name, q_obj in machine.qubits.items():
                     opx_out = getattr(getattr(q_obj, "xy", None), "opx_output", None)
                     if opx_out is None or not hasattr(opx_out, "band"):
                         continue
-                    if _get_port_info(opx_out) in target_fem_ports:
+                    if port_info(opx_out) in target_fem_ports:
                         port_pair_members.add(q_name)
+
+        # A port this probe re-parks must have ONE LO: an adopted borrowed channel
+        # on a second upconverter would ride through band switches it cannot
+        # follow. Refused here, before any port is touched.
+        carrying = sorted(
+            q_name for q_name in port_pair_members
+            if second_upconverter(getattr(getattr(machine.qubits[q_name], "xy", None),
+                                          "opx_output", None)) is not None)
+        if carrying:
+            raise ValueError(
+                f"{primary_target}: broadband_qubit_spectroscopy re-parks the drive "
+                f"LOs of {sorted(port_pair_members)}, and the port of {carrying} "
+                f"carries a second upconverter (an adopted borrowed channel, "
+                f"scqo-qm adopt-channel) this probe does not carry through its band "
+                f"switches. Scan a qubit on another port pair, or run on a setup "
+                f"without the adoption (scqo restore of an earlier run).")
 
         if is_octave:
             # The Octave's own "these move together" rule. Unlike the MW-FEM's
@@ -387,7 +372,7 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     # unknown one here is a programming error. The old
                     # (0.0, inf) default would have parked a member LO at
                     # 0 Hz instead of saying so.
-                    lo_min_new, _ = _MW_FEM_BANDS[seg_band]
+                    lo_min_new, _ = MW_FEM_BANDS[seg_band]
                     for member_name in port_pair_members:
                         member_q = machine.qubits[member_name]
                         member_xy = getattr(member_q, "xy", None)

@@ -22,12 +22,11 @@ on ``6/2``) its port follows the band and keeps its LO, so its IF - and its puls
 are unchanged. ``patch_preview_config`` gives ``--preview`` the same config.
 
 THE SELECTIVE PI is a square pulse with the rotation AREA of the member's calibrated
-``x180`` (:func:`selective_pi_scale`), so it needs no calibration of its own. The area
-is the x180's sampled waveform summed with the pulse's own frame ``detuning`` undone:
-that detuning compensates the Stark shift of a strong 16 ns pulse, which a weak pulse
-microseconds long does not have (5Q4C q1: -8.7 MHz; undone, a 16 ns DragCosine of
-amplitude A sums to exactly 7.5 A ns). Played as the member's ``saturation`` with
-``amplitude_scale`` and ``duration`` - no new waveform in the config.
+``x180`` (``_selective_pi.selective_pi_scale``, shared with the mapped readout), so it
+needs no calibration of its own; played as the member's ``saturation`` with
+``amplitude_scale`` and ``duration`` - no new waveform in the config. A pi member the
+tone's band switch would PARK at the band floor is refused by name: its pi would play
+off its frequency and the whole scan would read as ``no_line``.
 """
 
 from __future__ import annotations
@@ -40,17 +39,14 @@ import xarray as xr
 from qm.qua import *
 from qualang_tools.loops import from_array
 
+from scqo_qm._mw_fem import MAX_IF_HZ
 from scqo_qm.experiments._coupler_tone import (
-    MAX_IF_HZ,
     acquire,
     moved_lo_config,
     refuse_missing_thresholds,
 )
+from scqo_qm.experiments._selective_pi import SQUARE_OPERATION, selective_pi_scale
 
-#: the calibrated pulse whose rotation area the selective pi keeps
-PI_REFERENCE = "x180"
-#: the square operation the selective pi is played on
-SQUARE_OPERATION = "saturation"
 _CLOCK_NS = 4
 
 
@@ -149,41 +145,6 @@ def build_program(
     return prog, sweep_axes
 
 
-def pulse_area_ns(pulse) -> float:
-    """A pulse's rotation area (amplitude x ns): its sampled waveform summed with the
-    pulse's own frame ``detuning`` undone (samples are 1 ns apart)."""
-    w = np.atleast_1d(np.asarray(pulse.calculate_waveform(), dtype=complex))
-    if w.size == 1:                                  # a constant waveform
-        w = np.full(int(pulse.length), w[0])
-    t = np.arange(w.size) * 1e-9
-    detuning = float(getattr(pulse, "detuning", 0.0) or 0.0)
-    return float(abs(np.sum(w * np.exp(-1j * 2 * np.pi * detuning * t))))
-
-
-def selective_pi_scale(qubit, length_ns: int) -> float:
-    """The ``amplitude_scale`` on the member's :data:`SQUARE_OPERATION` that gives a
-    square pulse ``length_ns`` long the rotation area of its :data:`PI_REFERENCE`.
-    Refused by name when either operation is missing or the pulse would have to be
-    louder than the square operation itself."""
-    ops = getattr(qubit.xy, "operations", {}) or {}
-    for op in (PI_REFERENCE, SQUARE_OPERATION):
-        if op not in ops:
-            raise ValueError(f"{qubit.name}: pair_coupler_spectroscopy_zz builds the "
-                             f"selective pi from the pi member's {op!r}, and its drive "
-                             f"has none")
-    area = pulse_area_ns(ops[PI_REFERENCE])
-    square = abs(float(ops[SQUARE_OPERATION].amplitude))
-    if not (np.isfinite(area) and area > 0 and square > 0):
-        raise ValueError(f"{qubit.name}: {PI_REFERENCE!r} has no usable area ({area}) or "
-                         f"{SQUARE_OPERATION!r} no amplitude ({square})")
-    scale = area / float(length_ns) / square
-    if scale >= 1:
-        raise ValueError(f"{qubit.name}: a {length_ns} ns selective pi needs "
-                         f"{scale:.2f} x the {SQUARE_OPERATION!r} amplitude; make it "
-                         f"longer")
-    return scale
-
-
 from scqo import register
 from scqo.experiments import PairCouplerSpectroscopyZZ
 
@@ -219,6 +180,14 @@ class QMPairCouplerSpectroscopyZZ(JointPopulationMixin, PairCouplerSpectroscopyZ
 
         lo = self.lo_hz()
         config, moved = moved_lo_config(machine, tone_qubit, lo_hz=lo, experiment=self.name)
+        if moved["partner_parked"] and moved["partner"] == pi_qubit.name:
+            raise ValueError(
+                f"{self.name}: the tone moves {tone_qubit.name}'s port to MW-FEM band "
+                f"{moved['band']}, which cannot hold the LO of its port-pair partner "
+                f"{pi_qubit.name} - the pi member - so the partner would be parked at "
+                f"the band floor and its selective pi would play off its frequency. "
+                f"Put the tone on the other member (tone_on) or bring "
+                f"{pi_qubit.name}'s LO into band {moved['band']}.")
         self._moved = moved
 
         freqs = np.asarray(self.sweep_axes["tone_freq_hz"], dtype=float)

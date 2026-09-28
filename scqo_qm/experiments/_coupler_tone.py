@@ -12,6 +12,13 @@ the snapshot to call drift. A band switch carries the port-pair partner
 and is parked at the band's floor otherwise. MW-FEM only; an Octave tree is refused
 by name (its LO grid and shared synthesizers are ``broadband_qubit_spectroscopy``'s
 business).
+
+A port may carry a SECOND upconverter once a borrowed channel is adopted on it
+(``scqo-qm adopt-channel``: 5Q4C q2's port holds 4.9 GHz for q2 and 7.1 GHz for the
+couplers). Only the tone element's own upconverter moves - read and written through
+``scqo_qm._mw_fem``, never the port's ``upconverter_frequency`` attribute, which a
+two-upconverter port does not use - and a band switch that could not hold the other
+upconverter's LO is refused by name rather than stranding the adopted channel.
 """
 
 from __future__ import annotations
@@ -20,22 +27,22 @@ from typing import Any, Callable, Optional, Sequence
 
 import xarray as xr
 
+from scqo_qm._mw_fem import (
+    MW_FEM_BANDS,
+    band_holds,
+    partner_port_id,
+    port_info,
+    port_lo,
+    port_los,
+    set_port_lo,
+)
 from scqo_qm.experiments._lib import acquire as _acquire
-
-#: the IF window one LO plays (the repo's MW-FEM convention)
-MAX_IF_HZ = 250e6
-
-
-def _mw_fem_bands():
-    from scqo_qm.experiments.broadband_qubit_spectroscopy import _MW_FEM_BANDS
-
-    return _MW_FEM_BANDS
 
 
 def choose_band(current: int, lo_hz: float, partner_lo_hz: Optional[float]) -> int:
     """Keep the current band when it holds the LO; otherwise the lowest band that
     holds it AND the partner's LO, else the lowest that holds it."""
-    bands = _mw_fem_bands()
+    bands = MW_FEM_BANDS
     lo_min, lo_max = bands[current]
     if lo_min <= lo_hz <= lo_max:
         return current
@@ -47,15 +54,21 @@ def choose_band(current: int, lo_hz: float, partner_lo_hz: Optional[float]) -> i
     return (both or holding)[0]
 
 
+def _upconverter(channel) -> int:
+    """The upconverter an MW channel plays on (QUAM's default is 1)."""
+    return int(getattr(channel, "upconverter", 1) or 1)
+
+
 def moved_lo_config(machine, tone_qubit, *, lo_hz: float, experiment: str) -> tuple[dict, dict]:
-    """``machine.generate_config()`` with the tone qubit's port at ``lo_hz`` (band
-    switched with its port-pair partner when needed) and its drive RF at the LO (IF
-    0), then EVERY changed attribute restored. Returns (config, what_moved)."""
+    """``machine.generate_config()`` with the tone qubit's upconverter at ``lo_hz``
+    (band switched with its port-pair partner when needed) and its drive RF at the
+    LO (IF 0), then EVERY changed value restored. Returns (config, what_moved).
+
+    Only the tone element's own upconverter moves. A band switch is refused by name
+    when the new band cannot hold the LO of ANOTHER upconverter on either port of
+    the pair - an adopted borrowed channel rides it, and parking it would strand
+    that channel for the run."""
     from scqo_qm._family import RF_MW_FEM, rf_chain
-    from scqo_qm.experiments.broadband_qubit_spectroscopy import (
-        _get_port_info,
-        _partner_port_id,
-    )
 
     xy = tone_qubit.xy
     if rf_chain(xy) != RF_MW_FEM:
@@ -64,26 +77,46 @@ def moved_lo_config(machine, tone_qubit, *, lo_hz: float, experiment: str) -> tu
             f"probe does on an MW-FEM only (the drive is on "
             f"{rf_chain(xy) or 'an unrecognized RF chain'}).")
     port = xy.opx_output
-    info = _get_port_info(port)
+    up = _upconverter(xy)
+    info = port_info(port)
     partner = None
     if info is not None:
         ctrl, fem, pid = info
         for q in machine.qubits.values():
             other = getattr(getattr(q, "xy", None), "opx_output", None)
             if other is not None and other is not port and \
-                    _get_port_info(other) == (ctrl, fem, _partner_port_id(pid)):
+                    port_info(other) == (ctrl, fem, partner_port_id(pid)):
                 partner = q
                 break
     partner_port = partner.xy.opx_output if partner is not None else None
-    partner_lo = (float(partner_port.upconverter_frequency)
-                  if partner_port is not None else None)
+    partner_up = _upconverter(partner.xy) if partner is not None else 1
+    partner_lo = port_lo(partner_port, partner_up) if partner_port is not None else None
     band = choose_band(int(port.band), float(lo_hz), partner_lo)
+    if band != int(port.band):
+        stranded = [f"{label} upconverter {n} at {lo / 1e9:.4g} GHz"
+                    for label, p, keep in (("the tone port's", port, up),
+                                           ("its partner's", partner_port, partner_up))
+                    if p is not None
+                    for n, lo in port_los(p).items()
+                    if n != keep and not band_holds(band, lo)]
+        if stranded:
+            raise ValueError(
+                f"{tone_qubit.name}: {experiment} would switch the port pair to MW-FEM "
+                f"band {band}, which cannot hold {', '.join(stranded)} - an adopted "
+                f"borrowed channel rides it. Move the tone window into band "
+                f"{int(port.band)}, or tone through the other member (tone_on).")
 
-    saved: list[tuple[Any, str, Any]] = []
+    undo: list[Callable[[], None]] = []
 
     def set_(obj, attr, value):
-        saved.append((obj, attr, getattr(obj, attr)))
+        old = getattr(obj, attr)
+        undo.append(lambda o=obj, a=attr, v=old: setattr(o, a, v))
         setattr(obj, attr, value)
+
+    def set_lo(p, n, hz):
+        old = port_lo(p, n)
+        undo.append(lambda p=p, n=n, v=old: set_port_lo(p, n, v))
+        set_port_lo(p, n, hz)
 
     moved = {"lo_hz": float(lo_hz), "band": band, "band_before": int(port.band),
              "partner": partner.name if partner is not None else None, "partner_parked": 0}
@@ -92,17 +125,17 @@ def moved_lo_config(machine, tone_qubit, *, lo_hz: float, experiment: str) -> tu
             set_(port, "band", band)
             if partner_port is not None:
                 set_(partner_port, "band", band)
-                lo_min, lo_max = _mw_fem_bands()[band]
-                if not lo_min <= partner_lo <= lo_max:
-                    set_(partner_port, "upconverter_frequency", lo_min)
+                if partner_lo is not None and not band_holds(band, partner_lo):
+                    lo_min, _lo_max = MW_FEM_BANDS[band]
+                    set_lo(partner_port, partner_up, lo_min)
                     set_(partner.xy, "RF_frequency", lo_min)
                     moved["partner_parked"] = 1
-        set_(port, "upconverter_frequency", float(lo_hz))
+        set_lo(port, up, float(lo_hz))
         set_(xy, "RF_frequency", float(lo_hz))
         config = machine.generate_config()
     finally:
-        for obj, attr, value in reversed(saved):
-            setattr(obj, attr, value)
+        for restore in reversed(undo):
+            restore()
     return config, moved
 
 

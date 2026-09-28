@@ -12,6 +12,11 @@ inherited from ``scqo.experiments.QubitPowerRabi``. scqo's ``amp_prefactor`` is 
 a factor of the current pi pulse, which is exactly the QM builder's
 ``amplitude_scale``, so the sweep passes straight through — and since the probe emits
 that same axis NAME, ``_to_canonical`` matches it by name instead of by position.
+
+A COUPLER target (``drive_line`` + ``readout_member``; SCQO docs/coupler-transmon-plan.md)
+runs the same program over a ``_mapped_target.MappedTarget``: its ``xy`` is the adopted
+borrowed element, and its ``readout_state`` plays the map (the member's selective pi,
+then its x180) before the member's own readout.
 """
 
 from __future__ import annotations
@@ -136,9 +141,16 @@ class QMQubitPowerRabi(QubitPowerRabi):
     def probe(self) -> Any:
         from ._reset import check_reset_method, reset_max_attempts
         from scqo_qm.experiments._lib import select_qubits
+        from scqo_qm.experiments._mapped_target import mapped_targets, routes_through
 
         machine = self.backend.machine  # type: ignore[attr-defined]
-        qubits = select_qubits(machine, self.params.targets, multiplexed=True)
+        if routes_through(self.params):
+            # a target driven through a named line and/or read through a pair
+            # member (a coupler: drive_line + readout_member) - one transmon-shaped
+            # handle, so the program below is the qubits' own, unchanged
+            qubits = mapped_targets(self, machine)
+        else:
+            qubits = select_qubits(machine, self.params.targets, multiplexed=True)
 
         return build_program(
             machine,

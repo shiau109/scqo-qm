@@ -100,6 +100,19 @@ def vendor_qubit(experiment: Any, mode: str, *, field: str,
     return qubit
 
 
+def vendor_borrowed(experiment: Any, address: str) -> Any:
+    """The QUAM element that REALIZES a borrowed drive channel, by its roster
+    ADDRESS (``xy2.q1_q2_c``) - resolved by the backend's device model, which
+    files adopted elements under that address and refuses (KeyError, naming
+    ``scqo-qm adopt-channel``) one the state has not adopted. The Session's gate
+    has normally refused that case already, before any run folder exists."""
+    view = experiment.backend.device.component(address)
+    element = getattr(view, "vendor", None)
+    if element is None:  # pragma: no cover - component() raises first
+        raise ValueError(f"{address!r}: its view serves no QUAM element")
+    return element
+
+
 def role_member(roster: Any, pair: str, role: str) -> str:
     """The ONE mode filling a pair's ``high``/``low`` role (roster truth)."""
     members = roster.entities[pair].roles.get(role, ())

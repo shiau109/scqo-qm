@@ -143,6 +143,7 @@ def test_both_command_scoping_rules_fire_on_this_one_tree(opxp_backend):
     names = {c.name for c in opxp_backend.operator_commands()}
     assert "calibrate_octave" in names
     assert "apply_distortion" not in names
+    assert "adopt_channel" not in names  # an Octave output has no second upconverter
     assert "close_qm" in names
 
 
