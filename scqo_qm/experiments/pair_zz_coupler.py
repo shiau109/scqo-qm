@@ -8,7 +8,7 @@ QM residual-ZZ vs coupler bias for scqo - supplies ``probe()`` + the raw
 joint-state reduction.
 
 Parameters, the per-bias echo-fringe fit and the writeback (the decouple point
-as ``idle_flux`` on the COUPLER MODE's own flux channel, plus the residual
+as ``idle_flux`` on the COUPLER's own flux LINE, plus the residual
 ``zz_hz`` fact on the pair) are inherited from
 ``scqo.experiments.PairZZCoupler``. scqo sweeps
 ``(coupler_bias_v, idle_time_ns)``; the QM builder sweeps ``amplitudes`` (V on

@@ -28,9 +28,9 @@ entity owns each is in scqo_qm/backend/fieldmap.py, keyed by channel KIND)
     readout_rotation_rad  <-> ...operations['readout'].integration_weights_angle (rad, absolute)
     readout_threshold     <-> ...operations['readout'].threshold
     readout_rus_threshold <-> ...operations['readout'].rus_exit_threshold
-    idle_flux             <-> q.z.<flux_point>_offset       (qubit flux channel)
-                          <-> qp.coupler.<flux_point>_offset (COUPLER flux channel: the
-                              coupler mode's own q*_z entity, decouple/interaction/arbitrary)
+    idle_flux             <-> q.z.<flux_point>_offset       (a qubit's flux LINE, z1)
+                          <-> qp.coupler.<flux_point>_offset (a COUPLER's flux LINE, zc12:
+                              decouple/interaction/arbitrary)
 """
 
 from __future__ import annotations
@@ -765,7 +765,7 @@ def get_coupler_idle_flux(coupler: Any) -> float:
     ``flux_point``.
 
     Since the greenfield model a coupler is an ordinary roster MODE and its
-    standing bias is ``idle_flux`` on its own flux channel (the old pair-level
+    standing bias is ``idle_flux`` on its own flux LINE (the old pair-level
     coupler_decouple_v / coupler_interaction_v pair is gone): WHICH named point is
     active stays vendor config, and the neutral knob is the bias AT that point.
     """

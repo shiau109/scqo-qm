@@ -74,8 +74,8 @@ def mixer_channel(amplitude: float = 0.02):
 
 def test_both_solved_chains_are_named_rather_than_refused():
     assert _power_chain(NS(opx_output=NS(band=2, full_scale_power_dbm=-11)),
-                        name="q1_ro", field="readout_power_dbm") == "mw_fem"
-    assert _power_chain(octave_channel(), name="q1_ro",
+                        name="fl.q1", field="readout_power_dbm") == "mw_fem"
+    assert _power_chain(octave_channel(), name="fl.q1",
                         field="readout_power_dbm") == "octave"
 
 
@@ -83,16 +83,16 @@ def test_an_external_mixer_is_refused_naming_the_target_field_and_the_remedy():
     """Its power lives on the LO's own source, so pointing the operator at an
     Octave gain would send them to a knob that does not exist."""
     with pytest.raises(ValueError) as err:
-        _power_chain(mixer_channel(), name="q1_xy", field="drive_power_dbm")
+        _power_chain(mixer_channel(), name="xy1.q1", field="drive_power_dbm")
     message = str(err.value)
-    assert "q1_xy.drive_power_dbm" in message
+    assert "xy1.q1.drive_power_dbm" in message
     assert "external analog mixer" in message
     assert "drive_amp" in message  # what to reach for instead
 
 
 def test_a_channel_declaring_no_chain_says_so_rather_than_guessing():
     with pytest.raises(ValueError) as err:
-        _power_chain(NS(), name="q1_ro", field="readout_power_dbm")
+        _power_chain(NS(), name="fl.q1", field="readout_power_dbm")
     message = str(err.value)
     assert "no RF chain" in message
     assert "state.json" in message  # where to go look
@@ -104,7 +104,7 @@ def test_a_channel_declaring_no_chain_says_so_rather_than_guessing():
 def test_the_readout_view_reads_and_writes_an_octave_chain(backend, stub_machine):
     resonator = octave_channel(gain=-20.0, amplitude=0.0316227766)
     stub_machine.qubits["q1"].resonator = resonator
-    view = backend.device.component("q1_ro")
+    view = backend.device.component("fl.q1")
 
     assert view.readout_power_dbm == pytest.approx(-40.0, abs=1e-6)
 
@@ -116,7 +116,7 @@ def test_the_readout_view_reads_and_writes_an_octave_chain(backend, stub_machine
 def test_the_drive_view_reads_and_writes_an_octave_chain(backend, stub_machine):
     xy = octave_channel(gain=0.0, amplitude=0.125)
     stub_machine.qubits["q1"].xy = xy
-    view = backend.device.component("q1_xy")
+    view = backend.device.component("xy1.q1")
 
     assert view.drive_power_dbm == pytest.approx(volts_to_dbm(0.125), abs=1e-9)
 
@@ -131,7 +131,7 @@ def test_a_write_that_must_move_the_gain_warns_about_the_mixer_calibration(
     silently invalidates it -- and on a multiplexed feedline it moved every other
     channel on that output too."""
     stub_machine.qubits["q1"].resonator = octave_channel(gain=0.0, amplitude=0.05)
-    view = backend.device.component("q1_ro")
+    view = backend.device.component("fl.q1")
 
     with pytest.warns(RuntimeWarning, match="mixer calibration"):
         view.readout_power_dbm = 20.0
@@ -142,7 +142,7 @@ def test_a_write_that_must_move_the_gain_warns_about_the_mixer_calibration(
 def test_a_write_the_amplitude_can_absorb_warns_about_nothing(
         backend, stub_machine, recwarn):
     stub_machine.qubits["q1"].resonator = octave_channel(gain=-20.0, amplitude=0.03)
-    view = backend.device.component("q1_ro")
+    view = backend.device.component("fl.q1")
 
     view.readout_power_dbm = -38.0
 
@@ -151,7 +151,7 @@ def test_a_write_the_amplitude_can_absorb_warns_about_nothing(
 
 def test_an_external_mixer_view_still_refuses_by_name(backend, stub_machine):
     stub_machine.qubits["q1"].resonator = mixer_channel()
-    view = backend.device.component("q1_ro")
+    view = backend.device.component("fl.q1")
     with pytest.raises(ValueError, match="external analog mixer"):
         view.readout_power_dbm
 
@@ -193,7 +193,7 @@ def test_the_two_chain_blocks_stay_independent(backend, stub_machine):
     stub_machine.qubits["q1"].xy = mixer_channel()
     block = backend.power_context(["q1"])["q1"]
     assert block["readout_power_dbm"] == pytest.approx(
-        backend.device.component("q1_ro").readout_power_dbm)
+        backend.device.component("fl.q1").readout_power_dbm)
     assert "external analog mixer" in block["drive_unavailable"]
 
 

@@ -36,8 +36,8 @@ def find_coupler_pulse(macro, coupler):
     """The pulse object whose ``.amplitude`` IS this macro's coupler operating
     point, or None when the gate plays no coupler pulse.
 
-    Non-raising, because its caller is the DEVICE SURFACE (``QMQubitPair``'s
-    ``<op>_coupler_flux`` knob) rather than a probe: a snapshot that cannot
+    Non-raising, because its caller is the DEVICE SURFACE (``QMOperation``'s
+    ``coupler_flux`` knob) rather than a probe: a snapshot that cannot
     answer must degrade, not crash a session.
 
     THREE shapes are in use and only the first was ever handled, which is why

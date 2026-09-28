@@ -275,13 +275,14 @@ def test_window_getter_reads_float_sample_weights():
 
 
 def test_qm_channel_views_use_the_shared_mapping():
-    """The scqo CHANNEL views and quam_fields produce identical QUAM writes (the
-    dedup). Since the greenfield split there is one view per channel KIND over
-    the SAME QUAM qubit — the drive knobs on q.xy, the readout knobs on
-    q.resonator, the standing bias on q.z — so each is constructed with its own
-    entity name and subtree, exactly as component() does."""
+    """The scqo views and quam_fields produce identical QUAM writes (the dedup).
+    Since the greenfield split there is one view per channel KIND over the SAME
+    QUAM qubit — the drive knobs on q.xy, the readout knobs on q.resonator — and,
+    since SCQO 4.0.0, the standing bias on the flux LINE's view over q.z (one DC
+    offset per wire); each is constructed with its own entity address and
+    subtree, exactly as component() does."""
     from scqo_qm.backend.qm_backend import (
-        QMDriveChannel, QMFluxChannel, QMReadoutChannel,
+        QMDriveChannel, QMFluxChannel, QMFluxLine, QMReadoutChannel,
     )
 
     q = _qubit(f_01=5.0e9, xy_rf=5.1e9)
@@ -292,7 +293,7 @@ def test_qm_channel_views_use_the_shared_mapping():
                           independent_offset=0.0, min_offset=0.0,
                           arbitrary_offset=0.0)
 
-    drive = QMDriveChannel("q0_xy", q)
+    drive = QMDriveChannel("xy0.q0", q)
     drive.drive_freq_hz = 5.002e9
     assert q.f_01 == pytest.approx(5.002e9)
     assert q.xy.RF_frequency == pytest.approx(5.002e9)  # the same absolute value, not a shifted offset
@@ -307,7 +308,7 @@ def test_qm_channel_views_use_the_shared_mapping():
     assert q.xy.operations["x90"].amplitude == pytest.approx(0.16)
     assert q.xy.operations["x180"].amplitude == pytest.approx(0.3)  # pi unchanged
 
-    readout = QMReadoutChannel("q0_ro", q)
+    readout = QMReadoutChannel("fl.q0", q)
     readout.readout_freq_hz = 6.4e9
     assert q.resonator.RF_frequency == pytest.approx(6.4e9)
     assert q.resonator.f_01 == pytest.approx(6.4e9)
@@ -319,9 +320,9 @@ def test_qm_channel_views_use_the_shared_mapping():
     assert q.resonator.operations["readout"]._raw_weights == [(1.0, 2000), (0.0, 2000)]
     assert readout.readout_integration_s == pytest.approx(2.0e-6)
 
-    # the flux view's single knob lands on the offset z.flux_point SELECTS —
+    # the flux LINE's standing bias lands on the offset z.flux_point SELECTS —
     # which under scqo is always "joint", the point every probe applies
-    flux = QMFluxChannel("q0_z", q)
+    flux = QMFluxLine("z0", q, q.z)
     flux.idle_flux = -0.031
     assert q.z.joint_offset == pytest.approx(-0.031)
     assert flux.idle_flux == pytest.approx(-0.031)
@@ -331,16 +332,29 @@ def test_qm_channel_views_use_the_shared_mapping():
     # joint_offset. The write succeeded and the run was simply unaffected.
     assert q.z.independent_offset == 0.0
 
+    # the flux CHANNEL z0.q0 stays the vendor door onto the same element, but it
+    # is KNOB-FREE: its fields are the target's transfer-function facts, which
+    # live in physical.json and never push
+    channel = QMFluxChannel("z0.q0", q)
+    assert channel.vendor is q.z and channel.qubit is q
+    assert not hasattr(QMFluxChannel, "idle_flux")
+    assert not hasattr(QMFluxChannel, "flux_delay_s")
+    # ... and a write aimed at the old home fails loudly instead of landing in
+    # the instance dict while QUAM keeps the old bias
+    with pytest.raises(AttributeError, match="serves no field 'idle_flux'"):
+        channel.idle_flux = 0.5
+    assert q.z.joint_offset == pytest.approx(-0.031)
+
 
 def test_qm_flux_view_serves_a_coupler_without_a_qubit():
-    """The SECOND vendor shape behind one neutral knob: a coupler's flux channel
+    """The SECOND vendor shape behind one neutral knob: a coupler's flux LINE
     has no QUAM qubit at all — the view is built on the TunableCoupler directly
     and idle_flux follows its own flux-point vocabulary (off -> decouple_offset)."""
-    from scqo_qm.backend.qm_backend import QMFluxChannel
+    from scqo_qm.backend.qm_backend import QMFluxLine
 
     coupler = SimpleNamespace(id="coupler_q1_q2", flux_point="off",
                               decouple_offset=0.0, interaction_offset=0.2)
-    view = QMFluxChannel("q1_q2_c_z", None, coupler)
+    view = QMFluxLine("zc", None, coupler)
     assert view.qubit is None and view.vendor is coupler
 
     view.idle_flux = 0.07

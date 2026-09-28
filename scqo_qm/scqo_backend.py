@@ -8,8 +8,9 @@ canonical names — ``state.json`` + ``wiring.json``. That folder is the single
 QUAM-state authority for this device's setup (quam's own resolution via ~/.qualibrate
 or QUAM_STATE_PATH is deliberately bypassed). It also receives the device's ROSTER,
 the authority on which entities exist: the driver serves views BY ENTITY NAME
-(``q1_xy`` -> its drive view over QUAM's ``q1.xy``, ``q1_q2_c_z`` -> the pair's
-TunableCoupler), so the roster is threaded into the backend and every name resolves
+(the channel ``xy1.q1`` -> its drive view over QUAM's ``q1.xy``, the coupler's flux
+line ``zc12`` -> the pair's TunableCoupler, the operation ``q1_q2.iswap`` -> its
+gate macro), so the roster is threaded into the backend and every name resolves
 through it. Vendor imports stay INSIDE the function so loading this module is cheap
 and vendor-free. (The virtual-twin ``qm_sim`` mode was retired with v0.5.0.)
 """

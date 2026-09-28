@@ -5,7 +5,8 @@ from .qm_backend import (
     QMDeviceModel,
     QMDriveChannel,
     QMFluxChannel,
-    QMQubitPair,
+    QMFluxLine,
+    QMOperation,
     QMReadoutChannel,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "QMDeviceModel",
     "QMDriveChannel",
     "QMFluxChannel",
-    "QMQubitPair",
+    "QMFluxLine",
+    "QMOperation",
     "QMReadoutChannel",
 ]

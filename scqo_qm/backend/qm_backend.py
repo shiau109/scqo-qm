@@ -5,14 +5,19 @@ so that `import scqo_qm.backend.qm_backend` works without an instrument and pull
 qualang_tools only when data is actually acquired. This module is never imported by
 the qualibrate calibration nodes - scqo is its consumer.
 
-Since the greenfield model a driver serves a view PER CHANNEL ENTITY, not per
-qubit: the roster's ``q1_xy`` / ``q1_ro`` / ``q1_z`` each carry their own
-function's knobs and resolve onto the matching SUBTREE of the same QUAM qubit
-(``q.xy`` / ``q.resonator`` / ``q.z``), while a coupler's ``q1_q2_c_z`` lands on
-the pair's ``TunableCoupler``. Composites keep a real QM surface — unlike Qblox,
-QUAM has qubit_pairs with gate macros — served by :class:`QMQubitPair` through
-the generic ``read_knob``/``write_knob`` contract (per-operation knob names such
-as ``iswap_coupler_flux`` are roster-dependent, so they cannot be properties).
+Since the greenfield model a driver serves a view PER ENTITY, not per qubit,
+and since SCQO 4.0.0 (docs/store-by-line-plan.md) an entity's name is its
+ADDRESS. The channel ``xy1.q1`` / ``feedline.q1`` resolves onto the matching
+SUBTREE of the QUAM qubit its target names (``q.xy`` / ``q.resonator``). The
+flux LINE ``z1`` owns the standing bias and the output delay and resolves onto
+the flux element of the one qubit (``q.z``) or coupler (the pair's
+``TunableCoupler``) it carries; the flux CHANNEL ``z1.q1`` resolves onto the
+same element knob-free (its transfer function is physical.json facts) and stays
+the probes' vendor door. Declared operations keep a real QM surface - unlike
+Qblox, QUAM has qubit_pairs with gate macros - served by :class:`QMOperation`
+over the macro realizing ``<pair>.<op>``. A BORROWED channel (a mode driven
+through a line that does not carry it by design, ``xy2.q1_q2_c``) is realized
+only once the QUAM state holds an element for it; until then it is a KeyError.
 ``QMDeviceModel.component`` does every one of those resolutions THROUGH THE
 ROSTER, never by parsing names.
 
@@ -35,15 +40,16 @@ from typing import TYPE_CHECKING, Any
 
 import xarray as xr
 from scqo.backend import Backend, PreviewWarning
-from scqo.catalog import OP_KNOBS, derived_op
+from scqo.catalog import OPERATION_FIELDS, derived_op
 from scqo.device import (
     ComponentInfo,
-    CompositeView,
     DeviceModel,
     EntityView,
+    OperationView,
+    make_line_view_base,
     make_view_base,
 )
-from scqo.entities import Channel, Composite
+from scqo.entities import Channel, Composite, Line, Operation
 from scqo.fieldmap import OperatorCommand, Unrealized, VendorBinding, VendorOnly
 
 from scqo_qm import quam_fields
@@ -60,8 +66,8 @@ from scqo_qm.backend._power import solve_octave_chain
 from scqo_qm.experiments._coupler_knob import find_coupler_pulse
 from scqo_qm.backend.fieldmap import (
     FIELD_BINDINGS,
-    OP_KNOB_BINDINGS,
-    OP_KNOB_UNREALIZED,
+    OPERATION_BINDINGS,
+    OPERATION_UNREALIZED,
     OPERATOR_COMMANDS,
     UNREALIZED,
     VENDOR_ONLY,
@@ -339,13 +345,26 @@ _VERSIONED_DISTRIBUTIONS = ("scqo-qm", "quam", "qm-qua")
 
 # ------------------------------------------------------------- channel views
 
+def _guarded_setattr(view: Any, attr: str, value) -> None:
+    """A write to a name the view does not serve fails LOUDLY. Without this a
+    knob that moved - ``idle_flux`` left the flux CHANNEL for its LINE in SCQO
+    4.0.0 - lands in the instance dict and never reaches QUAM, with nothing to
+    say so. Plumbing (``name``, ``_*``) and the view's own properties pass."""
+    if (attr == "name" or attr.startswith("_")
+            or isinstance(getattr(type(view), attr, None), property)):
+        object.__setattr__(view, attr, value)
+        return
+    raise AttributeError(
+        f"{getattr(view, 'name', '?')}: {type(view).__name__} serves no "
+        f"field {attr!r}")
+
+
 class _QMChannelView:
     """Shared plumbing of the three channel views.
 
-    ``name`` is the ROSTER ENTITY name (``q1_ro``) — what scqo addresses and what
-    every error message must cite; the VENDOR name (``q1``) is ``qubit.name``.
-    The two were the same string in the pre-greenfield model, which is why the
-    split matters.
+    ``name`` is the ROSTER ENTITY name (``feedline.q1``) — what scqo addresses
+    and what every error message must cite; the VENDOR name (``q1``) is
+    ``qubit.name``.
 
     ``qubit`` is the QUAM qubit this channel's target resolves to (None for a
     coupler flux channel, whose vendor object hangs off a qubit_pair instead);
@@ -364,6 +383,9 @@ class _QMChannelView:
         self._vendor = (vendor if vendor is not None
                         else getattr(qubit, self._SUBTREE))
 
+    def __setattr__(self, attr: str, value) -> None:
+        _guarded_setattr(self, attr, value)
+
     @property
     def qubit(self) -> Any:
         """The QUAM qubit behind this channel (None for a coupler flux line)."""
@@ -377,7 +399,7 @@ class _QMChannelView:
 
 
 class QMReadoutChannel(_QMChannelView, make_view_base("readout")):
-    """The scqo READOUT channel view (``q1_ro``) over ``q.resonator``.
+    """The scqo READOUT channel view (``feedline.q1``) over ``q.resonator``.
 
     Carries the dispersive-readout knobs: tone frequency, pulse amplitude/power,
     the pulse/window pair, and the full single-shot discriminator (rotation,
@@ -471,7 +493,7 @@ class QMReadoutChannel(_QMChannelView, make_view_base("readout")):
 
 
 class QMDriveChannel(_QMChannelView, make_view_base("drive")):
-    """The scqo DRIVE channel view (``q1_xy``) over ``q.xy``.
+    """The scqo DRIVE channel view (``xy1.q1``) over ``q.xy``.
 
     Carries the xy knobs: drive frequency, the calibrated pi pulse (amplitude,
     length and DRAG coefficient), and the saturation-drive pair behind the
@@ -569,25 +591,50 @@ class QMDriveChannel(_QMChannelView, make_view_base("drive")):
 
 
 class QMFluxChannel(_QMChannelView, make_view_base("flux")):
-    """The scqo FLUX channel view (``q1_z``, ``q1_q2_c_z``) over a flux source.
-
-    Two vendor shapes behind one neutral knob, which is exactly the point of the
-    greenfield split: a QUBIT's flux channel serves ``q.z`` (a QUAM ``FluxLine``,
-    flux points joint/independent/min/arbitrary), a COUPLER's serves the pair's
-    ``TunableCoupler`` (flux points off/on/arbitrary). ``idle_flux`` is the
-    offset SELECTED by that object's ``flux_point``; which point is active stays
-    vendor config. A coupler's decouple bias is therefore an ordinary
-    ``idle_flux`` write on its own flux channel — the pair-level
-    ``coupler_decouple_v`` / ``coupler_interaction_v`` fields are gone.
-
-    The transfer-function FACTS (flux_offset, flux_per_phi0, distortion taps) are
-    physical.json content and never push, so this view carries two knobs:
-    ``idle_flux`` (the standing bias) and ``flux_delay_s`` (the line's output
-    delay). Both resolve against ``self._vendor``, the flux-carrying channel —
-    ``q.z`` for a qubit, the ``TunableCoupler`` for a coupler (both SingleChannels).
+    """The scqo FLUX channel view (``z1.q1``, ``zc12.q1_q2_c``) over a flux
+    source: KNOB-FREE since 4.0.0. The channel's fields are the target's
+    transfer-function FACTS (``flux_offset``, ``flux_per_phi0``), which live in
+    physical.json and never push; the knobs moved to the LINE
+    (:class:`QMFluxLine`). The view stays because it is the probes' vendor door
+    and the doctor's witness that the element exists: ``vendor`` is ``q.z`` for a
+    qubit, the pair's ``TunableCoupler`` for a coupler (``qubit`` is None then).
     """
 
     _SUBTREE = "z"
+
+
+class QMFluxLine(make_line_view_base("flux")):
+    """The scqo flux LINE view (``z1``, ``zc12``): the knobs that exist once per
+    wire - ``idle_flux`` (the standing bias) and ``flux_delay_s`` (the output
+    port's delay).
+
+    Two vendor shapes behind one neutral knob: a QUBIT's line serves ``q.z`` (a
+    QUAM ``FluxLine``, flux points joint/independent/min/arbitrary), a
+    COUPLER's serves the pair's ``TunableCoupler`` (flux points off/on/
+    arbitrary). ``idle_flux`` is the offset SELECTED by that object's
+    ``flux_point``; which point is active stays vendor config. A coupler's
+    decouple bias is therefore an ordinary ``idle_flux`` write on its own flux
+    line. Served for a line carrying exactly ONE flux element: a wire feeding
+    several (a broadcast coil) is refused by :meth:`QMDeviceModel.component`.
+    """
+
+    def __init__(self, name: str, qubit: Any, vendor: Any) -> None:
+        self.name = name
+        self._q = qubit
+        self._vendor = vendor
+
+    def __setattr__(self, attr: str, value) -> None:
+        _guarded_setattr(self, attr, value)
+
+    @property
+    def qubit(self) -> Any:
+        """The QUAM qubit whose z this line is (None for a coupler's line)."""
+        return self._q
+
+    @property
+    def vendor(self) -> Any:
+        """The flux SingleChannel behind the line (``q.z`` / ``TunableCoupler``)."""
+        return self._vendor
 
     @property
     def idle_flux(self) -> float:
@@ -614,8 +661,8 @@ class QMFluxChannel(_QMChannelView, make_view_base("flux")):
 
 
 #: channel kind -> the view class this backend serves for it. A kind absent here
-#: (``pump``) and every non-channel, non-composite entity (modes, lines) is a
-#: KeyError from ``component()`` — the contract scqo degrades gracefully against.
+#: (``pump``) and every mode or composite is a KeyError from ``component()`` —
+#: the contract scqo degrades gracefully against.
 _CHANNEL_VIEWS: dict[str, type[_QMChannelView]] = {
     "drive": QMDriveChannel,
     "readout": QMReadoutChannel,
@@ -623,39 +670,33 @@ _CHANNEL_VIEWS: dict[str, type[_QMChannelView]] = {
 }
 
 
-# ------------------------------------------------------------ composite view
+# ------------------------------------------------------------ operation view
 
-#: virtual-Z knob suffix -> the ROSTER role it corrects (the vendor side is
-#: resolved from that role by name; see QMQubitPair._phase_attr).
+#: virtual-Z knob -> the ROSTER role it corrects (the vendor side is resolved
+#: from that role by name; see QMOperation._phase_attr).
 _VZ_ROLE = {"vz_high_rad": "high", "vz_low_rad": "low"}
 
 
-class QMQubitPair(CompositeView):
-    """The scqo COMPOSITE view over a QUAM ``qubit_pair`` (QCQ architecture).
+class QMOperation(OperationView):
+    """The scqo OPERATION view (``q1_q2.iswap``) over the QUAM gate macro that
+    realizes it on the pair's ``qubit_pair`` (QCQ architecture).
 
-    Per-operation knob names are roster-dependent (``iswap_coupler_flux`` exists
-    only because the roster declares the pair's ``iswap`` operation), so the
-    surface is the generic ``read_knob``/``write_knob`` pair rather than
-    properties. A field is split into ``(operation, suffix)`` against the
-    catalog's OP_KNOBS family and the operations the roster DECLARES — never by
-    prefix guessing — and the suffix is then mapped onto the QUAM gate macro
-    (``qp.macros['CZ']``; the macro name is matched case-insensitively because
-    QUAM spells the macro "CZ" while the roster spells the operation "cz").
+    The fields are ``scqo.catalog.OPERATION_FIELDS`` by plain name
+    (``coupler_flux``, ``vz_high_rad``, ...), mapped onto the macro whose name
+    matches the declared operation (case-insensitively: QUAM spells the gate
+    macro "CZ" while the roster spells the operation "cz").
 
     What is NOT here: the coupler's standing bias, which is ``idle_flux`` on the
-    coupler MODE's own flux channel (:class:`QMFluxChannel`).
+    coupler's own flux LINE (:class:`QMFluxLine`).
     """
 
-    #: OP_KNOBS suffixes, longest first — "cz_waveform_dt_s" must not match the
-    #: "waveform" suffix. The set itself comes from scqo, never re-declared here.
-    _SUFFIXES: tuple[str, ...] = tuple(
-        sorted(OP_KNOBS, key=len, reverse=True))
-
-    def __init__(self, name: str, pair: Any, entity: Composite) -> None:
+    def __init__(self, name: str, pair: Any, operation: Operation,
+                 composite: Composite) -> None:
         self.name = name
-        self.kind = entity.kind
+        self.kind = operation.kind
         self._qp = pair
-        self._entity = entity
+        self._op = operation.op
+        self._composite = composite
 
     @property
     def vendor(self) -> Any:
@@ -663,47 +704,29 @@ class QMQubitPair(CompositeView):
         return self._qp
 
     # ------------------------------------------------------------- resolution
-    def _split(self, field: str) -> tuple[str, str]:
-        """``'iswap_coupler_flux'`` -> ``('iswap', 'coupler_flux')``, validated
-        against the operations the ROSTER declares on this composite.
-
-        Longest suffix first (``cz_waveform_dt_s`` is dt, not a waveform), and a
-        structural match on an UNDECLARED operation does not stop the scan — the
-        undeclared-operation error is only raised once no suffix yields a
-        declared one, so the message always names the real cause.
-        """
-        undeclared: str | None = None
-        for suffix in self._SUFFIXES:
-            if not field.endswith("_" + suffix):
-                continue
-            op = field[: -len(suffix) - 1]
-            if op in self._entity.operations:
-                return op, suffix
-            if undeclared is None:
-                undeclared = op
-        if undeclared is not None:
+    def _field(self, field: str) -> str:
+        if field not in OPERATION_FIELDS:
             raise KeyError(
-                f"{self.name}.{field}: operation {undeclared!r} is not declared "
-                f"on this composite "
-                f"(declared: {sorted(self._entity.operations)})")
-        raise KeyError(
-            f"{self.name}.{field}: not a per-operation knob — the legal suffixes "
-            f"are {sorted(self._SUFFIXES)} on operations "
-            f"{sorted(self._entity.operations)}")
+                f"{self.name}.{field}: not an operation field (legal: "
+                f"{sorted(OPERATION_FIELDS)})")
+        entry = OPERATION_UNREALIZED.get(field)
+        if entry is not None:
+            raise NotImplementedError(f"{self.name}.{field}: {entry.reason}")
+        return field
 
-    def _macro(self, op: str) -> Any:
-        """The QUAM gate macro realizing one declared operation."""
+    def _macro(self) -> Any:
+        """The QUAM gate macro realizing this operation."""
         macros = getattr(self._qp, "macros", {}) or {}
-        if op in macros:
-            return macros[op]
-        hits = [k for k in macros if k.lower() == op.lower()]
+        if self._op in macros:
+            return macros[self._op]
+        hits = [k for k in macros if k.lower() == self._op.lower()]
         if len(hits) == 1:
             return macros[hits[0]]
         raise KeyError(
-            f"{self.name}: no QUAM macro for operation {op!r} on pair "
-            f"{getattr(self._qp, 'id', self.name)!r} (macros: {sorted(macros)}) "
-            f"— the roster declares the operation, the vendor config must "
-            f"provide the gate macro that realizes it")
+            f"{self.name}: no QUAM macro for operation {self._op!r} on pair "
+            f"{getattr(self._qp, 'id', self._composite.name)!r} (macros: "
+            f"{sorted(macros)}) — the roster declares the operation, the vendor "
+            f"config must provide the gate macro that realizes it")
 
     def _phase_attr(self, role: str) -> str:
         """QUAM ``phase_shift_control``/``phase_shift_target`` for a ROSTER role.
@@ -713,7 +736,7 @@ class QMQubitPair(CompositeView):
         a pair whose QUAM members disagree with its roster roles is refused
         rather than silently writing the wrong qubit's virtual Z.
         """
-        names = {r: self._entity.roles.get(r, ()) for r in ("high", "low")}
+        names = {r: self._composite.roles.get(r, ()) for r in ("high", "low")}
         if len(names["high"]) != 1 or len(names["low"]) != 1:
             raise KeyError(
                 f"{self.name}: roles high={list(names['high'])} "
@@ -733,47 +756,39 @@ class QMQubitPair(CompositeView):
                 f"to guess which qubit a virtual-Z correction belongs to")
         return mapping[role]
 
-    @staticmethod
-    def _unrealized(suffix: str, field: str) -> None:
-        entry = OP_KNOB_UNREALIZED.get(suffix)
-        if entry is not None:
-            raise NotImplementedError(f"{field}: {entry.reason}")
-
     # --------------------------------------------------------------- surface
     def read_knob(self, field: str) -> float | list[float] | None:
-        op, suffix = self._split(field)
-        self._unrealized(suffix, field)
-        macro = self._macro(op)
-        if suffix == "coupler_flux":
+        field = self._field(field)
+        macro = self._macro()
+        if field == "coupler_flux":
             pulse = find_coupler_pulse(macro, getattr(self._qp, 'coupler', None))
             if pulse is None:  # fixed coupler: the gate plays no coupler pulse
                 return None
             amp = getattr(pulse, "amplitude", None)
             return None if amp is None else float(amp)
-        if suffix in _VZ_ROLE:
-            turns = getattr(macro, self._phase_attr(_VZ_ROLE[suffix]), None)
+        if field in _VZ_ROLE:
+            turns = getattr(macro, self._phase_attr(_VZ_ROLE[field]), None)
             # QUAM stores frame rotations in TURNS (frame_rotation_2pi units).
             return None if turns is None else float(turns) * 2.0 * math.pi
-        raise KeyError(f"{self.name}.{field}: no QM binding for suffix {suffix!r}")
+        raise KeyError(f"{self.name}.{field}: no QM binding for {field!r}")
 
     def write_knob(self, field: str, value) -> None:
-        op, suffix = self._split(field)
-        self._unrealized(suffix, field)
-        macro = self._macro(op)
-        if suffix == "coupler_flux":
+        field = self._field(field)
+        macro = self._macro()
+        if field == "coupler_flux":
             pulse = find_coupler_pulse(macro, getattr(self._qp, 'coupler', None))
             if pulse is None:
                 raise KeyError(
-                    f"{self.name}.{field}: macro {op!r} plays no coupler pulse "
-                    f"(a fixed-coupler gate) — nothing realizes a coupler "
+                    f"{self.name}.{field}: macro {self._op!r} plays no coupler "
+                    f"pulse (a fixed-coupler gate) — nothing realizes a coupler "
                     f"operating point for it")
             pulse.amplitude = float(value)
             return
-        if suffix in _VZ_ROLE:
-            setattr(macro, self._phase_attr(_VZ_ROLE[suffix]),
+        if field in _VZ_ROLE:
+            setattr(macro, self._phase_attr(_VZ_ROLE[field]),
                     float(value) / (2.0 * math.pi))
             return
-        raise KeyError(f"{self.name}.{field}: no QM binding for suffix {suffix!r}")
+        raise KeyError(f"{self.name}.{field}: no QM binding for {field!r}")
 
 
 # ------------------------------------------------------------- device model
@@ -784,13 +799,40 @@ def _read_or_none(view: EntityView, field: str) -> float | list[float] | None:
     ValueError covers readout_power_dbm on a zero/unset amplitude (the absolute
     power is undefined there, not zero); AttributeError an uncalibrated or
     partly-wired QUAM node; NotImplementedError (a RuntimeError subclass) the
-    Unrealized composite knobs. Provenance must never crash a session."""
+    Unrealized operation knobs. Provenance must never crash a session."""
     try:
-        if isinstance(view, CompositeView):
+        if isinstance(view, OperationView):
             return view.read_knob(field)
         return getattr(view, field)
     except (TypeError, AttributeError, KeyError, ValueError, RuntimeError):
         return None
+
+
+def port_label(channel: Any) -> str | None:
+    """Where one QUAM channel leaves the instrument - DISPLAY only (``scqo state``
+    prints it beside the roster line): ``con1/6/3`` for an FEM port (`` up2``
+    when an MW channel rides the port's second upconverter), ``con1/3`` for an
+    OPX+ output, ``oct1/RF2`` for an Octave up-converter. None when the channel
+    declares no output this can name; never raises."""
+    try:
+        out = getattr(channel, "opx_output", None)
+        tup = getattr(out, "port_tuple", None) if out is not None else None
+        if tup:
+            label = "/".join(str(part) for part in tup)
+            up = getattr(channel, "upconverter", None)
+            return f"{label} up{up}" if isinstance(up, int) and up != 1 else label
+        conv = getattr(channel, "frequency_converter_up", None)
+        if conv is not None:
+            octave = getattr(conv, "octave", None)
+            name = getattr(octave, "name", None) or "octave"
+            return f"{name}/RF{getattr(conv, 'id', '?')}"
+        i_port = getattr(channel, "opx_output_I", None)
+        tup = getattr(i_port, "port_tuple", None) if i_port is not None else None
+        if tup:
+            return "/".join(str(part) for part in tup) + " (I)"
+    except Exception:
+        return None
+    return None
 
 
 def _vendor_names(obj: Any) -> set[str]:
@@ -810,11 +852,13 @@ def _vendor_names(obj: Any) -> set[str]:
 class QMDeviceModel(DeviceModel):
     """Wraps a QUAM machine (`Quam`), addressed by ROSTER entity name.
 
-    ``component("q1_ro")`` resolves the channel entity through the roster, takes
-    its KIND and its single TARGET, fetches the vendor subtree for that target
-    and returns the matching channel view; ``component("q1_q2")`` resolves the
-    composite onto the QUAM qubit_pair. The roster is therefore not optional —
-    without it the driver cannot tell what ``q1_ro`` means.
+    ``component("feedline.q1")`` resolves the channel entity through the roster,
+    takes its KIND and its single TARGET, fetches the vendor subtree for that
+    target and returns the matching channel view; ``component("z1")`` resolves
+    the flux line onto the one flux element it carries; ``component(
+    "q1_q2.iswap")`` resolves the operation onto the gate macro of the QUAM
+    qubit_pair behind its composite. The roster is therefore not optional —
+    without it the driver cannot tell what ``feedline.q1`` means.
 
     ``state_dir``: explicit save target — the folder the machine was loaded from.
     ``QMBackend.load`` always passes it. ``QuamRoot.load(path)`` does not remember
@@ -861,6 +905,16 @@ class QMDeviceModel(DeviceModel):
             + (f"(several do: {sorted(hits)})" if hits else
                f"(pairs in this state: {sorted(pairs)})"))
 
+    def pair(self, composite: str) -> Any:
+        """The raw QUAM ``qubit_pair`` behind a roster COMPOSITE - the probes'
+        vendor door for pair programs (a composite has no view: its facts are
+        physical.json's, its knobs its operations'). KeyError when the name is
+        no composite or no QUAM pair matches it."""
+        e = self._roster.entities.get(composite)
+        if not isinstance(e, Composite):
+            raise KeyError(f"{composite!r} is not a composite of this roster")
+        return self._pair_object(e)
+
     def _coupler_object(self, target: str) -> Any | None:
         """The ``TunableCoupler`` a roster COUPLER MODE names, or None.
 
@@ -883,7 +937,67 @@ class QMDeviceModel(DeviceModel):
                 return coupler
         return None
 
+    def _flux_element(self, name: str, target: str) -> tuple[Any, Any]:
+        """``(qubit or None, flux SingleChannel)`` for one flux target: the
+        QUAM qubit's ``z``, else the TunableCoupler a coupler MODE names (a
+        coupler is an ordinary roster mode but NOT a QUAM qubit: it hangs off
+        its pair). KeyError when the loaded state has neither."""
+        qubit = self._machine.qubits.get(target)
+        if qubit is not None:
+            z = getattr(qubit, "z", None)
+            if z is None:
+                raise KeyError(
+                    f"{name!r} reaches {target!r}, which has no 'z' in the "
+                    f"loaded QUAM state — this machine does not wire a flux "
+                    f"line to it (a fixed-frequency qubit has no z)")
+            return qubit, z
+        coupler = self._coupler_object(target)
+        if coupler is not None:
+            return None, coupler
+        raise KeyError(
+            f"{name!r} reaches {target!r}, which is neither a qubit of the "
+            f"loaded QUAM state (qubits: {sorted(self._machine.qubits)}) nor a "
+            f"coupler of one of its qubit_pairs")
+
+    def _kind_vendor(self, target: str, kind: str) -> Any:
+        """The QUAM channel one KIND of signal to ``target`` plays on - per
+        kind, so a combined drive+flux wire (one channel, two kinds) answers
+        for both - or None when the loaded state has none."""
+        if kind == "flux":
+            try:
+                return self._flux_element(target, target)[1]
+            except KeyError:
+                return None
+        view_cls = _CHANNEL_VIEWS.get(kind)
+        qubit = self._machine.qubits.get(target)
+        if view_cls is None or qubit is None:
+            return None
+        return getattr(qubit, view_cls._SUBTREE, None)
+
+    def _line_view(self, name: str, line: Line) -> EntityView:
+        """The flux LINE view: its one designed flux channel's element."""
+        flux = [c for c in self._roster.channels_on(name) if "flux" in c.kinds]
+        if not flux:
+            raise KeyError(
+                f"{name!r} is a line that carries no flux channel — only a flux "
+                f"line owns fields of its own (idle_flux, flux_delay_s); address "
+                f"the channels riding it: "
+                f"{[c.name for c in self._roster.channels_on(name)]}")
+        if len(flux) > 1:
+            raise KeyError(
+                f"{name!r} carries {len(flux)} flux channels "
+                f"{[c.name for c in flux]} — the QM backend serves a flux line "
+                f"with ONE QUAM flux element (a broadcast coil has no single "
+                f"element to hold its bias)")
+        qubit, element = self._flux_element(name, flux[0].target[0])
+        return QMFluxLine(name, qubit, element)
+
     def _channel_view(self, name: str, e: Channel) -> EntityView:
+        if e.borrowed:
+            raise KeyError(
+                f"{name!r} is a BORROWED channel ({e.kind} of {e.target[0]!r} "
+                f"through line {e.line!r}) and this QUAM state holds no element "
+                f"realizing it - the vendor config must adopt it first")
         view_cls = _CHANNEL_VIEWS.get(e.kind)
         if view_cls is None:
             raise KeyError(
@@ -894,6 +1008,9 @@ class QMDeviceModel(DeviceModel):
                 f"{name!r} is a multi-target {e.kind} channel {e.target} — the "
                 f"QM backend serves one QUAM object per channel")
         target = e.target[0]
+        if e.kind == "flux":
+            qubit, element = self._flux_element(name, target)
+            return view_cls(name, qubit, element)
         qubit = self._machine.qubits.get(target)
         if qubit is not None:
             subtree = getattr(qubit, view_cls._SUBTREE, None)
@@ -901,16 +1018,8 @@ class QMDeviceModel(DeviceModel):
                 raise KeyError(
                     f"{name!r} targets {target!r}, which has no "
                     f"{view_cls._SUBTREE!r} in the loaded QUAM state — this "
-                    f"machine does not wire a {e.kind} line to it (a "
-                    f"fixed-frequency qubit has no z)")
+                    f"machine does not wire a {e.kind} line to it")
             return view_cls(name, qubit, subtree)
-        if e.kind == "flux":
-            # A coupler is an ordinary roster MODE but NOT a QUAM qubit: it hangs
-            # off its pair. Only its flux line exists (couplers are not driven or
-            # read), so this hop is flux-only by construction.
-            coupler = self._coupler_object(target)
-            if coupler is not None:
-                return view_cls(name, None, coupler)
         raise KeyError(
             f"{name!r} targets {target!r}, which is neither a qubit of the "
             f"loaded QUAM state (qubits: {sorted(self._machine.qubits)}) nor a "
@@ -920,49 +1029,71 @@ class QMDeviceModel(DeviceModel):
         """The view for one vendor-realized entity, addressed by ROSTER name.
 
         KeyError for everything this backend does not realize — an unknown name,
-        a mode or line (knobs live on channels), a pump or multi-target channel,
-        a channel whose target has no QUAM object, and a composite with no
-        qubit_pair. That is the contract: scqo degrades gracefully and the doctor
-        reports the gap against ``components()``.
+        a mode or composite (their values are facts), a line carrying no flux, a
+        pump or multi-target channel, a channel whose target has no QUAM object,
+        a borrowed channel the QUAM state does not adopt, and an operation whose
+        pair has no qubit_pair or gate macro. That is the contract: scqo degrades
+        gracefully and the doctor reports the gap against ``components()``.
         """
         e = self._roster.entities.get(name)
         if e is None:
             raise KeyError(f"unknown entity {name!r} — not in this device's roster")
         if isinstance(e, Channel):
             return self._channel_view(name, e)
+        if isinstance(e, Line):
+            return self._line_view(name, e)
+        if isinstance(e, Operation):
+            composite = self._roster.entities[e.composite]
+            return QMOperation(name, self._pair_object(composite), e, composite)
         if isinstance(e, Composite):
-            return QMQubitPair(name, self._pair_object(e), e)
+            raise KeyError(
+                f"{name!r} is a composite; its knobs live on its declared "
+                f"operations {[f'{name}.{op}' for op in e.operations]}")
         channels = [c.name for c in self._roster.channels_of(name)]
         raise KeyError(
             f"{name!r} is a {type(e).__name__.lower()}; the QM backend serves "
-            f"channel and composite entities only (knobs live there) — address "
+            f"channels, lines and operations only (knobs live there) — address "
             f"{channels or '(none wired)'}")
+
+    def _realized(self, names) -> dict[str, EntityView]:
+        out: dict[str, EntityView] = {}
+        for name in names:
+            try:
+                out[name] = self.component(name)
+            except KeyError:
+                continue
+        return out
 
     def components(self) -> dict[str, ComponentInfo]:
         """Derived inventory (the doctor's WITNESS, never truth): every roster
-        channel and composite this backend actually serves a view for, with the
-        kind it serves it AS — ``vendor_checks`` FAILS on a kind disagreement, so
-        this reports the ROSTER's kind of the entity we resolved, never a QUAM
-        class name (which cannot tell a coupler from a qubit).
+        channel (designed, or borrowed and adopted), line and operation this
+        backend actually serves a view for, with the kind it serves it AS —
+        ``vendor_checks`` FAILS on a kind disagreement, so this reports the
+        ROSTER's kind of the entity we resolved, never a QUAM class name (which
+        cannot tell a coupler from a qubit).
         """
         out: dict[str, ComponentInfo] = {}
-        for name, ch in self._roster.channels().items():
-            try:
-                self.component(name)
-            except KeyError:
-                continue
+        channels = {n: e for n, e in self._roster.entities.items()
+                    if isinstance(e, Channel)}
+        for name in self._realized(channels):
+            ch = channels[name]
             out[name] = ComponentInfo(
                 kind=ch.kind, target=tuple(ch.target), line=ch.line,
                 operations=self._derived_operations(ch))
-        for name, comp in self._roster.composites().items():
-            try:
-                self.component(name)
-            except KeyError:
-                continue
+        for name in self._realized(self._roster.lines()):
             out[name] = ComponentInfo(
-                kind=comp.kind, operations=tuple(comp.operations),
+                kind="line", line=name,
+                target=tuple(t for c in self._roster.channels_on(name)
+                             if "flux" in c.kinds for t in c.target))
+        ops = self._roster.operation_entities()
+        for name in self._realized(ops):
+            op = ops[name]
+            composite = self._roster.entities[op.composite]
+            out[name] = ComponentInfo(
+                kind="operation", target=(op.composite,),
+                operations=(op.op,),
                 members={role: tuple(members)
-                         for role, members in comp.roles.items()})
+                         for role, members in composite.roles.items()})
         return out
 
     def _derived_operations(self, channel: Channel) -> tuple[str, ...]:
@@ -981,34 +1112,27 @@ class QMDeviceModel(DeviceModel):
         save_state(self._machine, self._state_dir)
 
     def snapshot(self) -> dict:
-        """``{entity: {knob: value}}`` over the entities this backend realizes.
+        """``{entity: {knob: value}}`` over the entities this backend realizes -
+        channels, flux lines and operations.
 
-        Channels report the knobs the fieldmap declares BOUND (an Unrealized one
-        has no vendor value to seed from); composites report the per-operation
-        knobs the ROSTER compiled for them (their legal names are per-device).
-        None for a knob a given QUAM node cannot answer — a real lab state
-        carries uncalibrated qubits (f_01=None), and provenance must never crash
-        a session."""
+        Each reports the knobs of its compiled field set that the fieldmap
+        declares BOUND (an Unrealized one has no vendor value to seed from);
+        an entity not realized here is absent entirely. None for a knob a given
+        QUAM node cannot answer — a real lab state carries uncalibrated qubits
+        (f_01=None), and provenance must never crash a session."""
+        bound = {f for kind in FIELD_BINDINGS.values() for f in kind}
         state: dict[str, dict] = {}
-        for name, ch in self._roster.channels().items():
-            try:
-                view = self.component(name)
-            except KeyError:
-                continue  # not realized here: absent from the snapshot entirely
-            state[name] = {
-                field: _read_or_none(view, field)
-                for field in FIELD_BINDINGS.get(ch.kind, {})
-            }
-        for name in self._roster.composites():
-            try:
-                view = self.component(name)
-            except KeyError:
-                continue
-            state[name] = {
-                field: _read_or_none(view, field)
-                for field, spec in self._roster.fields_of(name).items()
-                if spec.role == "knob"
-            }
+        names = [n for n, e in self._roster.entities.items()
+                 if isinstance(e, (Channel, Line, Operation))]
+        for name, view in self._realized(names).items():
+            legal = self._roster.fields_of(name)
+            served = (OPERATION_BINDINGS
+                      if isinstance(self._roster.entities[name], Operation)
+                      else bound)
+            fields = [f for f, spec in legal.items()
+                      if spec.role == "knob" and f in served]
+            if fields:
+                state[name] = {f: _read_or_none(view, f) for f in fields}
         return state
 
 
@@ -1081,10 +1205,9 @@ class QMBackend(Backend):
 
     def field_bindings(self) -> dict[str, dict[str, VendorBinding]]:
         """The declared per-CHANNEL-KIND neutral-knob catalog
-        (scqo_qm.backend.fieldmap) — the conversion CODE is the channel views
-        above; this is its description. The composite per-operation surface is
-        :meth:`op_knob_bindings` (its field names are roster-dependent, so it
-        cannot be keyed by catalog field name)."""
+        (scqo_qm.backend.fieldmap), channel and line fields of each kind — the
+        conversion CODE is the views above; this is its description. The
+        operation surface is :meth:`operation_bindings`."""
         return {kind: dict(bindings) for kind, bindings in FIELD_BINDINGS.items()}
 
     def unrealized(self) -> dict[str, dict[str, Unrealized]]:
@@ -1092,13 +1215,35 @@ class QMBackend(Backend):
         empty: QM realizes every drive/readout/flux knob in the catalog."""
         return {kind: dict(entries) for kind, entries in UNREALIZED.items()}
 
-    def op_knob_bindings(self) -> tuple[dict[str, VendorBinding],
-                                        dict[str, Unrealized]]:
-        """The composite (``qubit_pair``) per-OPERATION knob catalog, keyed by
-        the ``scqo.catalog.OP_KNOBS`` suffix: ``(bindings, unrealized)``. The
-        full field name is ``<operation>_<suffix>`` for every operation the
-        roster declares on the pair — see :class:`QMQubitPair`."""
-        return dict(OP_KNOB_BINDINGS), dict(OP_KNOB_UNREALIZED)
+    def operation_bindings(self) -> dict[str, VendorBinding]:
+        """The declared operation-knob catalog over
+        ``scqo.catalog.OPERATION_FIELDS`` — see :class:`QMOperation`."""
+        return dict(OPERATION_BINDINGS)
+
+    def operation_unrealized(self) -> dict[str, Unrealized]:
+        """OPERATION_FIELDS this backend cannot realize (see fieldmap)."""
+        return dict(OPERATION_UNREALIZED)
+
+    def line_ports(self) -> dict[str, str]:
+        """``{line: port label}`` for every roster line whose designed channels
+        resolve to a QUAM element with a nameable output (:func:`port_label`)
+        - display only. Several labels on one line (a feedline read through
+        two ports) are joined with ", "; never raises."""
+        out: dict[str, str] = {}
+        for line in self._roster.lines():
+            labels: list[str] = []
+            for ch in self._roster.channels_on(line):
+                for kind in ch.kinds:  # a combined wire: every function's port
+                    try:
+                        vendor = self._device._kind_vendor(ch.target[0], kind)
+                    except Exception:
+                        continue
+                    label = port_label(vendor)
+                    if label and label not in labels:
+                        labels.append(label)
+            if labels:
+                out[line] = ", ".join(labels)
+        return out
 
     def vendor_only(self) -> dict[str, VendorOnly]:
         """QM-unique calibration knobs, vendor-owned (see fieldmap), for THIS tree.

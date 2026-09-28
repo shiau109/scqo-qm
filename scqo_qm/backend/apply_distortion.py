@@ -4,7 +4,8 @@ After ``scqo run qubit_spectroscopy_cryoscope --target q1`` (or the ramsey one) 
 ``scqo accept``, the fit's ``distortion_amp``/``distortion_tau_s`` live as FACTS in
 scqo's ``physical.json`` — record-only, never auto-pushed. This turns them into the
 OPX predistortion filter in one step: resolve the ACTIVE scqo device/setup (the same
-selection ``scqo run`` uses), read the accepted taps for ``<target>``'s flux channel,
+selection ``scqo run`` uses), read the accepted taps on ``<target>``'s flux LINE
+(the wire's impulse response; ``z1.distortion_amp`` since 4.0.0),
 write them onto ``machine.qubits[<target>].z.opx_output.exponential_filter`` via
 :func:`scqo_qm.backend._distortion.apply_exponential_filter`, and save the setup's
 ``state.json``. Fully OFFLINE — ``build_session`` loads the QUAM from JSON and never
@@ -152,11 +153,11 @@ def apply_distortion_from_state(
     Resolves the ACTIVE scqo selection (unless ``session`` is injected — for tests)
     and takes the taps from ``run_id``'s saved fit when given (the run-addressed
     door — accept order becomes irrelevant), else from the accepted facts
-    (``distortion_amp``/``distortion_tau_s`` on the target's flux channel). Writes
+    (``distortion_amp``/``distortion_tau_s`` on the target's flux LINE). Writes
     them to the QUAM z-output ``exponential_filter`` and (unless ``dry_run`` or
     ``save=False``) saves the setup's ``state.json``. OFFLINE.
 
-    Returns a summary dict: ``target``, ``channel``, ``run_id``, ``amps``,
+    Returns a summary dict: ``target``, ``line``, ``run_id``, ``amps``,
     ``taus_s``, ``existing_taps``, ``state_dir``, ``saved``, plus
     ``apply_exponential_filter``'s ``exponential_filter`` + ``scale``. Raises
     ``SystemExit`` when no taps are available (no accepted facts / bad run).
@@ -166,15 +167,16 @@ def apply_distortion_from_state(
 
         session, cfg = build_session(config_path)
 
-    channel = session.backend.roster.default_channel(target, FLUX_KIND)  # q1 -> q1_z
+    roster = session.backend.roster
+    line = roster.entities[roster.default_channel(target, FLUX_KIND)].line  # q1 -> z1
     if run_id is not None:
         amps, taus_s = _run_taps(session, run_id, target)
     else:
-        amps = session.physical.get(channel, "distortion_amp")
-        taus_s = session.physical.get(channel, "distortion_tau_s")
+        amps = session.physical.get(line, "distortion_amp")
+        taus_s = session.physical.get(line, "distortion_tau_s")
         if amps is None or taus_s is None:
             raise SystemExit(
-                f"no accepted distortion facts for {channel} — run and accept a "
+                f"no accepted distortion facts on {line} — run and accept a "
                 f"cryoscope for {target!r} first (distortion_amp/distortion_tau_s "
                 f"are unset in physical.json), or apply straight from a run with "
                 f"--run <run_id>"
@@ -188,7 +190,7 @@ def apply_distortion_from_state(
 
     if replace and existing:
         warnings.warn(
-            f"replacing {existing} existing exponential_filter tap(s) on {channel}; "
+            f"replacing {existing} existing exponential_filter tap(s) on {line}; "
             f"a full correction must be MEASURED on a filter-cleared line (use "
             f"--extend to refine a residual instead)",
             stacklevel=2,
@@ -219,7 +221,7 @@ def apply_distortion_from_state(
 
     return {
         "target": target,
-        "channel": channel,
+        "line": line,
         "run_id": run_id,
         "amps": list(amps),
         "taus_s": list(taus_s),
@@ -300,7 +302,7 @@ def main(argv: list[str] | None = None, prog: str = "scqo-qm apply-distortion") 
     verb = "would write" if args.dry_run else ("appended" if args.extend else "wrote")
     source = f"run {out['run_id']}" if out["run_id"] else "accepted facts"
     print(
-        f"{args.target} ({out['channel']}, from {source}): {verb} "
+        f"{args.target} ({out['line']}, from {source}): {verb} "
         f"{len(out['exponential_filter'])} exponential_filter tap(s)"
     )
     for pair in out["exponential_filter"]:

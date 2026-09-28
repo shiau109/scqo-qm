@@ -1,12 +1,17 @@
 """Unit tests for apply_distortion_from_state with an INJECTED fake session — no
 scqo config and no QM cluster. The live ``build_session`` -> facts -> apply path is
 scqo-owned and exercised by the ``--dry-run`` smoke in the plan's verification.
+
+The session is fake but its roster is the REAL fixture roster (conftest), so the
+target -> flux LINE hop is the one a live session takes: since SCQO 4.0.0 the
+taps are facts of the LINE (``z1.distortion_amp``), not of a per-target channel.
 """
 
 from types import SimpleNamespace
 
 import pytest
 
+from conftest import ROSTER_TOML
 from scqo_qm.backend.apply_distortion import (
     apply_distortion_from_state,
     clear_distortion,
@@ -25,8 +30,9 @@ def _machine(existing=None):
 
 def _session(machine, facts, runs=None):
     """A fake scqo Session exposing exactly what the helper reads."""
-    roster = SimpleNamespace(default_channel=lambda t, k: f"{t}_{'z' if k == 'flux' else k}")
-    backend = SimpleNamespace(machine=machine, roster=roster)
+    from scqo.roster import parse_components
+
+    backend = SimpleNamespace(machine=machine, roster=parse_components(ROSTER_TOML))
     physical = SimpleNamespace(get=lambda entity, field: facts.get((entity, field)))
 
     def load_run(run_id):
@@ -51,14 +57,15 @@ def _run(amps, taus, *, experiment="qubit_spectroscopy_cryoscope",
 
 
 def _facts(amps, taus):
-    return {("q1_z", "distortion_amp"): amps, ("q1_z", "distortion_tau_s"): taus}
+    return {("z1", "distortion_amp"): amps, ("z1", "distortion_tau_s"): taus}
 
 
-def test_reads_flux_channel_applies_and_saves():
+def test_reads_the_flux_line_applies_and_saves():
     m = _machine()
     sess = _session(m, _facts([0.05, -0.03], [100e-9, 3000e-9]))
     out = apply_distortion_from_state("q1", session=sess)  # cfg=None -> no state_dir
-    assert out["channel"] == "q1_z"  # fact-vs-mode bridge: q1 -> q1_z
+    # fact-vs-mode bridge: q1 -> its designed flux channel z1.q1 -> the LINE z1
+    assert out["line"] == "z1"
     assert m.qubits["q1"].z.opx_output.exponential_filter == [
         [0.05, 100.0], [-0.03, 3000.0]]  # tau s->ns
     # saved once, and include_defaults is PASSED: left to QUAM it is read from
@@ -105,7 +112,7 @@ def test_missing_both_facts_raises_and_saves_nothing():
 
 def test_only_one_paired_fact_present_still_raises():
     m = _machine()
-    sess = _session(m, {("q1_z", "distortion_amp"): [0.05]})  # taus missing -> None
+    sess = _session(m, {("z1", "distortion_amp"): [0.05]})  # taus missing -> None
     with pytest.raises(SystemExit, match="no accepted distortion facts"):
         apply_distortion_from_state("q1", session=sess)
 

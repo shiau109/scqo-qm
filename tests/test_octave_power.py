@@ -75,7 +75,7 @@ def test_the_CURRENT_gain_is_snapped_too_not_just_a_new_one():
     """A tree can hold an off-grid gain (a hand edit, or a float that round-tripped
     through JSON). Solving an amplitude against a gain the hardware will not take
     is a silent half-dB error in everything downstream."""
-    solution = solve_octave_chain(-20.0, current_gain_db=-10.3, name="q1_ro")
+    solution = solve_octave_chain(-20.0, current_gain_db=-10.3, name="fl.q1")
     assert solution.gain_db == -10.5
     assert not solution.gain_moved  # snapping is not "moving"
 
@@ -84,7 +84,7 @@ def test_the_CURRENT_gain_is_snapped_too_not_just_a_new_one():
 
 
 def test_the_gain_is_held_whenever_the_amplitude_can_express_the_target():
-    solution = solve_octave_chain(0.0, current_gain_db=0.0, name="q1_xy")
+    solution = solve_octave_chain(0.0, current_gain_db=0.0, name="xy1.q1")
     assert solution.gain_db == 0.0
     assert solution.gain_moved is False
     assert solution.reason is None
@@ -97,7 +97,7 @@ def test_setting_the_power_a_chain_already_produces_moves_nothing():
     gain, amplitude = -20.0, 0.0316227766
     current = gain + volts_to_dbm(amplitude)
 
-    solution = solve_octave_chain(current, current_gain_db=gain, name="q1_ro")
+    solution = solve_octave_chain(current, current_gain_db=gain, name="fl.q1")
 
     assert solution.gain_db == gain
     assert solution.gain_moved is False
@@ -107,10 +107,10 @@ def test_setting_the_power_a_chain_already_produces_moves_nothing():
 def test_solving_twice_is_stable_even_when_the_first_solve_moved_the_gain():
     """The second call must be a no-op, or a sweep would walk the gain (and the
     mixer calibration) one step per point."""
-    first = solve_octave_chain(-40.0, current_gain_db=0.0, name="q1_ro")
+    first = solve_octave_chain(-40.0, current_gain_db=0.0, name="fl.q1")
     assert first.gain_moved
 
-    second = solve_octave_chain(-40.0, current_gain_db=first.gain_db, name="q1_ro")
+    second = solve_octave_chain(-40.0, current_gain_db=first.gain_db, name="fl.q1")
     assert second.gain_moved is False
     assert second.gain_db == first.gain_db
     assert second.amplitude_v == pytest.approx(first.amplitude_v)
@@ -118,7 +118,7 @@ def test_solving_twice_is_stable_even_when_the_first_solve_moved_the_gain():
 
 def test_the_gain_moves_only_when_the_amplitude_cannot_reach_and_says_why():
     """+20 dBm at gain 0 would need 5 V, ten times the DAC rail."""
-    solution = solve_octave_chain(20.0, current_gain_db=0.0, name="q1_xy")
+    solution = solve_octave_chain(20.0, current_gain_db=0.0, name="xy1.q1")
     assert solution.gain_moved is True
     assert solution.gain_db > 0.0
     assert solution.amplitude_v < MAX_IF_AMP_V
@@ -129,14 +129,14 @@ def test_the_gain_moves_only_when_the_amplitude_cannot_reach_and_says_why():
 def test_a_restaged_gain_aims_the_amplitude_at_the_mixer_optimum():
     """0.125 V is the Octave up-conversion mixer's optimum drive, so a gain that
     has to move should land there rather than anywhere merely legal."""
-    solution = solve_octave_chain(10.0, current_gain_db=-20.0, name="q1_xy")
+    solution = solve_octave_chain(10.0, current_gain_db=-20.0, name="xy1.q1")
     assert solution.amplitude_v == pytest.approx(OPTIMUM_IF_AMP_V, rel=0.15)
 
 
 def test_an_amplitude_far_under_the_floor_restages_the_gain_downward():
     """Not a hard limit -- a DAC-resolution one: below the floor the amplitude is
     using under 1% of full scale."""
-    solution = solve_octave_chain(-50.0, current_gain_db=10.0, name="q1_ro")
+    solution = solve_octave_chain(-50.0, current_gain_db=10.0, name="fl.q1")
     assert solution.gain_moved is True
     assert solution.gain_db < 10.0
     assert "gain moved down" in solution.reason
@@ -149,7 +149,7 @@ def test_the_vendors_own_multiplexed_readout_recipe_does_not_trip_the_floor():
     amplitude = OPTIMUM_IF_AMP_V / 5
     assert amplitude > OCTAVE_MIN_AMP_V
     target = -20.0 + volts_to_dbm(amplitude)
-    solution = solve_octave_chain(target, current_gain_db=-20.0, name="q1_ro")
+    solution = solve_octave_chain(target, current_gain_db=-20.0, name="fl.q1")
     assert solution.gain_moved is False
 
 
@@ -158,9 +158,9 @@ def test_the_vendors_own_multiplexed_readout_recipe_does_not_trip_the_floor():
 
 def test_a_target_above_the_chains_reach_is_refused_naming_the_window():
     with pytest.raises(ValueError) as err:
-        solve_octave_chain(40.0, current_gain_db=0.0, name="q1_xy")
+        solve_octave_chain(40.0, current_gain_db=0.0, name="xy1.q1")
     message = str(err.value)
-    assert "q1_xy" in message
+    assert "xy1.q1" in message
     assert f"{OCTAVE_MAX_POWER_DBM:.1f}" in message
     assert "attenuation" in message  # what to actually change
 
@@ -168,7 +168,7 @@ def test_a_target_above_the_chains_reach_is_refused_naming_the_window():
 def test_a_target_below_the_chains_reach_is_refused_the_same_way():
     with pytest.raises(ValueError, match="outside what an Octave output"):
         solve_octave_chain(OCTAVE_MIN_POWER_DBM - 10.0, current_gain_db=0.0,
-                           name="q1_ro")
+                           name="fl.q1")
 
 
 def test_the_reachable_window_is_the_gain_range_around_the_dac_rail():

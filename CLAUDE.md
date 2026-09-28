@@ -32,9 +32,13 @@ scqo_qm/
                          #   under scqo_qm runs the package __init__, which imports qm
   backend/
     qm_backend.py        # QMBackend (scqo.Backend) + QMDeviceModel + ONE view class per
-                         #   CHANNEL KIND (QMDriveChannel/QMReadoutChannel/QMFluxChannel)
-                         #   + QMQubitPair (composite view over the QUAM qubit_pair);
-                         #   acquire()/preview() live here
+                         #   CHANNEL KIND (QMDriveChannel/QMReadoutChannel/QMFluxChannel -
+                         #   the flux one knob-free, the probes' z door) + QMFluxLine (a
+                         #   flux LINE's idle_flux/flux_delay_s, SCQO 4.0.0) + QMOperation
+                         #   (a declared <pair>.<op> over its QUAM gate macro); a BORROWED
+                         #   channel is a KeyError until the state adopts an element for
+                         #   it; line_ports() labels each roster line's output for
+                         #   `scqo state`; acquire()/preview() live here
     fieldmap.py          # declarative neutral->vendor field catalog (pure data, per channel
                          #   kind) + VENDOR_ONLY, whose coupled/edit/counterpart carry the
                          #   OPERATIONAL half of a hand edit (what moves with it, what to
@@ -169,7 +173,8 @@ scripts/                 # check_real_config.py, migrate_state_scqo_qm.py (the p
    `acquire()` and returns the 3-tuple `(prog, sweep_axes, acquire)` — the CALLABLE.
 2. `@register` the class and add its import line in `scqo_qm/experiments/__init__.py`
    (manual — `tests/test_experiment_registration.py` refuses a module missing its line).
-3. Read device state through the CHANNEL views (`self.device.channel(target, "readout")...`);
+3. Read device state through the CHANNEL views (`self.device.channel(target, "readout")...`)
+   and a flux line's bias through `self.device.flux_line(target)` (or `flux_anchor_v`);
    vendor-only bits come from `_vendor.vendor_element(...)`. Shared guards: `_flux_limits`,
    `_amp_limits`, `_reset.check_reset_method`.
 4. May import qm.qua (module-level star-import is the DSL's requirement), quam, qualang_tools,

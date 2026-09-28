@@ -46,9 +46,12 @@ def vendor_pair(experiment: Any, composite: str) -> Any:
     Resolved by the backend (by name first, else by the composite's high/low
     membership): QM names its pairs after the coupler — ``coupler_q1_q2`` — so
     a roster composite named ``q1_q2`` is NOT a key of ``machine.qubit_pairs``
-    and must never be used as one.
+    and must never be used as one. Not through ``component()``: since SCQO
+    4.0.0 a composite carries facts only and has no view - its knobs live on
+    its declared operations, and a pair probe needs the pair whether or not the
+    roster declares any.
     """
-    return experiment.backend.device.component(composite).vendor
+    return experiment.backend.device.pair(composite)
 
 
 def vendor_pair_name(experiment: Any, composite: str) -> str:

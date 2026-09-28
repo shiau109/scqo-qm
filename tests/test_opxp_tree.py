@@ -146,13 +146,27 @@ def test_both_command_scoping_rules_fire_on_this_one_tree(opxp_backend):
     assert "close_qm" in names
 
 
+def test_line_ports_name_the_real_output_of_every_roster_line(opxp_backend):
+    """``scqo state`` prints each roster line's output beside it (SCQO 4.0.0).
+    Here the RF lines leave through Octave RF outputs and the flux lines through
+    OPX+ analog ports - the two label vocabularies a stub can only imitate - and
+    the multiplexed feedline is ONE output, so it carries one label."""
+    import re
+
+    ports = opxp_backend.line_ports()
+    assert set(ports) == set(opxp_backend.roster.lines())
+    for line, label in ports.items():
+        pattern = r"con1/\d+" if line.startswith("z_") else r"oct1/RF\d"
+        assert re.fullmatch(pattern, label), (line, label)
+
+
 # --- absolute power, on the real chain ------------------------------------
 
 
 def test_the_power_the_builder_staged_reads_back_as_the_power_it_asked_for(
         opxp_backend):
     generator = _load_generator()
-    assert opxp_backend.device.component("q1_ro").readout_power_dbm == pytest.approx(
+    assert opxp_backend.device.component("fl.q1").readout_power_dbm == pytest.approx(
         generator.READOUT_POWER_DBM, abs=1e-6)
 
 
@@ -160,7 +174,7 @@ def test_re_setting_the_current_power_leaves_the_gain_and_the_calibration_alone(
         opxp_backend, opxp_machine):
     """THE property, now on a real tree: the gain keys the mixer calibration, so
     an idempotent write must not touch it."""
-    view = opxp_backend.device.component("q1_ro")
+    view = opxp_backend.device.component("fl.q1")
     gain_before = opxp_machine.qubits["q1"].resonator.frequency_converter_up.gain
     power = view.readout_power_dbm
 
@@ -174,7 +188,7 @@ def test_re_setting_the_current_power_leaves_the_gain_and_the_calibration_alone(
 
 
 def test_a_small_change_is_absorbed_by_the_amplitude(opxp_backend, opxp_machine):
-    view = opxp_backend.device.component("q1_ro")
+    view = opxp_backend.device.component("fl.q1")
     resonator = opxp_machine.qubits["q1"].resonator
     gain_before = resonator.frequency_converter_up.gain
     original = view.readout_power_dbm

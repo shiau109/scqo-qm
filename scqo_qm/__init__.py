@@ -12,13 +12,15 @@ from scqo_qm.backend.qm_backend import (
     QMDeviceModel,
     QMDriveChannel,
     QMFluxChannel,
-    QMQubitPair,
+    QMFluxLine,
+    QMOperation,
     QMReadoutChannel,
 )
 from scqo_qm import experiments  # noqa: F401  (import side effect: @register)
 
 __all__ = [
     "QMBackend", "QMDeviceModel",
-    # one view class per CHANNEL KIND + the composite (qubit_pair) surface
-    "QMDriveChannel", "QMReadoutChannel", "QMFluxChannel", "QMQubitPair",
+    # one view class per CHANNEL KIND, the flux LINE, and the operation surface
+    "QMDriveChannel", "QMReadoutChannel", "QMFluxChannel", "QMFluxLine",
+    "QMOperation",
 ]

@@ -90,7 +90,7 @@ class QMSingleShotReadout(SingleShotReadout):
             d = compute_ge_discriminator(mean_g, mean_e, shots_g, shots_e)
 
             # The discriminator trio lives on the READOUT channel entity
-            # (q1_ro), addressed by its target's default channel — the qubit
+            # (feedline.q1), addressed by its target's default channel — the qubit
             # MODE name carries no knobs since the greenfield split.
             view = self.device.channel(qubit, "readout")
             # An UNSET rotation means no rotation has been applied yet, so the

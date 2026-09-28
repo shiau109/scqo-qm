@@ -61,7 +61,7 @@ def main() -> int:
     from scqo_qm._family import tree_families
     from scqo_qm.backend.roster_gen import roster_toml_for
 
-    # The driver resolves every name through the ROSTER (q1_ro -> the readout
+    # The driver resolves every name through the ROSTER (fl.q1 -> the readout
     # knobs of vendor qubit q1), so it is needed before the device model. This
     # throwaway self-test derives one from the QUAM tree itself; the REAL
     # roster lives in <data_root>/<device>/components.toml and is what
@@ -80,7 +80,7 @@ def main() -> int:
 
     dm = QMDeviceModel(machine, roster)
     snap = dm.snapshot()
-    for name, fields in snap.items():  # keyed by CHANNEL entity (q1_ro, q1_xy, ...)
+    for name, fields in snap.items():  # keyed by entity (fl.q1, xy_q1.q1, z_q1, ...)
         print(f"      {name}: {fields}")
 
     # Absolute power is the one knob family whose vendor home is chain-specific,
@@ -97,7 +97,11 @@ def main() -> int:
 
     # The two experiments below anchor on these knobs; a real lab state
     # carries uncalibrated qubits (value None), which are skipped, not run.
-    needed = {q: ((f"{q}_ro", "readout_freq_hz"), (f"{q}_xy", "pi_amp"))
+    # Each qubit's channels come from the roster (its default readout and drive
+    # channels), never from string arithmetic on the qubit name.
+    ro = {q: roster.default_channel(q, "readout") for q in machine.qubits}
+    xy = {q: roster.default_channel(q, "drive") for q in machine.qubits}
+    needed = {q: ((ro[q], "readout_freq_hz"), (xy[q], "pi_amp"))
               for q in machine.qubits}
     unreadable = [q for q, pairs in needed.items()
                   if any(snap.get(ch, {}).get(field) is None for ch, field in pairs)]
@@ -121,10 +125,11 @@ def main() -> int:
             failures.append(experiment)
 
     # the knobs those two experiments write live on the CHANNEL entities:
-    # readout_freq_hz on <q>_ro, pi_amp on <q>_xy — and dm.snapshot() reads
-    # them back THROUGH the views onto QUAM, so "moved" means the vendor tree.
+    # readout_freq_hz on the readout channel, pi_amp on the drive channel — and
+    # dm.snapshot() reads them back THROUGH the views onto QUAM, so "moved"
+    # means the vendor tree.
     after = dm.snapshot()
-    touched = [f"{q}_ro" for q in qubits] + [f"{q}_xy" for q in qubits]
+    touched = [ro[q] for q in qubits] + [xy[q] for q in qubits]
     moved = [name for name in touched if after[name] != before[name]]
     print(f"[4/5] writeback reached the real QUAM objects for: {moved or 'NONE'}")
     if set(moved) != set(touched):
@@ -135,8 +140,8 @@ def main() -> int:
     reloaded = load_state(saved)
     dm2 = QMDeviceModel(reloaded, roster)
     round_trip = all(
-        abs(dm2.snapshot()[f"{q}_ro"]["readout_freq_hz"]
-            - after[f"{q}_ro"]["readout_freq_hz"]) < 1e-3 for q in qubits
+        abs(dm2.snapshot()[ro[q]]["readout_freq_hz"]
+            - after[ro[q]]["readout_freq_hz"]) < 1e-3 for q in qubits
     )
     print(f"[5/5] QUAM save/reload round-trip (scratch path): {'OK' if round_trip else 'MISMATCH'}")
     if not round_trip:

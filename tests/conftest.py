@@ -1,9 +1,12 @@
 """Shared fixtures for the QM driver tests (greenfield entity model).
 
-The backend now takes the device ROSTER: a driver serves a view per CHANNEL
-ENTITY (``q1_ro`` / ``q1_xy`` / ``q1_z``) over the matching SUBTREE of one QUAM
-qubit, and only the roster says what those names mean. :data:`ROSTER_TOML`
-describes the fixture chip in the schema-3 vocabulary.
+The backend takes the device ROSTER: a driver serves a view per ENTITY, and
+since SCQO 4.0.0 an entity's name is its ADDRESS - a channel ``<line>.<target>``
+(``fl.q1`` / ``xy1.q1`` / ``z1.q1``) over the matching SUBTREE of one QUAM
+qubit, a flux LINE (``z1``) over the one flux element it carries, a declared
+operation ``<pair>.<op>`` (``q1_q2.cz``) over its gate macro - and only the
+roster says what those names mean. :data:`ROSTER_TOML` describes the fixture
+chip in the components.toml schema-3 vocabulary (unchanged by 4.0.0).
 
 Two machine fixtures, deliberately:
 
@@ -14,9 +17,9 @@ Two machine fixtures, deliberately:
   legitimate working-tree situation, not a test failure.
 * :func:`stub_machine` is a hand-built stand-in with the same SHAPE, so the
   entity-resolution surface (component/components/snapshot, both flux shapes,
-  the pair knobs) is covered on every run, toggle or no toggle. It is a stub of
-  the vendor TREE only — every neutral conversion under test is the real
-  ``scqo_qm.quam_fields`` code.
+  the operation knobs) is covered on every run, toggle or no toggle. It is a
+  stub of the vendor TREE only — every neutral conversion under test is the
+  real ``scqo_qm.quam_fields`` code.
 
 The stub deliberately names its QUAM pair after the coupler (``coupler_q1_q2``,
 which is what quam_builder does) while the roster calls the composite ``q1_q2``
@@ -50,11 +53,15 @@ def hide_the_qualibrate_config(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("QUAM_CONFIG_FILE", str(missing))
 
 #: The fixture chip in the greenfield schema: ONE multiplexed feedline (the
-#: readout riders mint q1_res/q1_ro, ...), a drive wire per qubit, a flux wire
-#: for the two flux-tunable qubits and for the coupler MODE (its standing bias
-#: is idle_flux on q1_q2_c_z, not a pair field), and a fixed-frequency q3 with
-#: no flux rider at all. The pair composite declares one operation, so its
-#: per-operation knob family is cz_coupler_flux / cz_vz_high_rad / ...
+#: readout riders mint q1_res and the channel fl.q1, ...), a drive wire per
+#: qubit (xy1.q1, ...), a flux wire for the two flux-tunable qubits and for the
+#: coupler MODE (its standing bias is idle_flux on its own flux LINE zc, not a
+#: pair field), and a fixed-frequency q3 with no flux rider at all. The pair
+#: composite declares two operations, each an entity of its own (q1_q2.cz,
+#: q1_q2.iswap) carrying OPERATION_FIELDS by plain name (coupler_flux,
+#: vz_high_rad, ...). Every drive line also reaches the modes it does not carry
+#: by design - the BORROWED channels xy1.q2, xy2.q1_q2_c, ... - which the stub
+#: tree below does not adopt.
 ROSTER_TOML = """\
 schema = 3
 
@@ -244,11 +251,12 @@ def make_stub_machine() -> SimpleNamespace:
                 phase_shift_control=0.0, phase_shift_target=0.0,
             ),
             # The LAB's ISwapImplementation shape, and the reason it is here: the
-            # <op>_coupler_flux binding was written against the CZ shape only, so
-            # a stub carrying just that shape passed while every pair on the real
-            # chip — where every macro is an ISwapImplementation — read None and
-            # refused writes. It declares NO coupler_flux_pulse and names one
-            # flux_pulse played on both the control's z line and the coupler.
+            # operation knob coupler_flux (pre-4.0.0: <op>_coupler_flux) was
+            # bound against the CZ shape only, so a stub carrying just that shape
+            # passed while every pair on the real chip — where every macro is an
+            # ISwapImplementation — read None and refused writes. It declares NO
+            # coupler_flux_pulse and names one flux_pulse played on both the
+            # control's z line and the coupler.
             "iswap": SimpleNamespace(
                 flux_pulse="swap_flattop",
                 phase_shift_control=0.0, phase_shift_target=0.0,
@@ -280,8 +288,9 @@ def backend(stub_machine, roster):
 
 def recording_device(backend, roster):
     """The device surface an experiment reads through — what the Session hands
-    to ``exp.device``: channel-entity views over the vendor tree, knobs seeded
-    from the instrument (pull), backed by an in-memory store."""
+    to ``exp.device``: entity views (channels, flux lines, operations) over the
+    vendor tree, knobs seeded from the instrument (pull), backed by an in-memory
+    store."""
     from scqo.device import RecordingDevice
     from scqo.stores import state_store
 

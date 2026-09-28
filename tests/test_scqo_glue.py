@@ -2,17 +2,17 @@
 
 The real CLI coverage lives in SCQO/tests (test_cli_*.py) against the built-in
 simulated backend; this smoke test only proves the driver-side glue: the `scqo`
-command runs end-to-end in the qm venv, the per-CHANNEL-KIND fieldmap cannot
-drift from scqo's catalog, and the `scqo.backends` entry point resolves to a
-working factory (``build_backend(cfg, setup, roster)`` — the setup is a NAMED
-record, backend + note plus the DERIVED "instrument_config" vendor folder
-injected by scqo, and the roster is the device's authority on which entities
-exist).
+command runs end-to-end in the qm venv, the per-CHANNEL-KIND fieldmap (channel
+and line fields alike) and the operation fieldmap cannot drift from scqo's
+catalog, and the `scqo.backends` entry point resolves to a working factory
+(``build_backend(cfg, setup, roster)`` — the setup is a NAMED record, backend +
+note plus the DERIVED "instrument_config" vendor folder injected by scqo, and
+the roster is the device's authority on which entities exist).
 
 Greenfield: the temp lab writes a schema-3 components.toml (modes + lines; the
-readout rider mints q0_res/q0_ro, the drive rider q0_xy) plus the design.toml
-the simulated vendor seeds its knobs from — without a datasheet no knob has a
-standing value and every run fails pre-probe.
+readout rider mints q0_res and the channel fl.q0, the drive rider xy0.q0) plus
+the design.toml the simulated vendor seeds its knobs from — without a datasheet
+no knob has a standing value and every run fails pre-probe.
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ def _env(tmp_path: Path) -> dict:
         "[modes.q0]\n"
         'kind = "transmon"\n'
         "[lines.fl]\n"
-        'readout = ["q0"]\n'      # mints q0_res (mode) + q0_ro (channel)
+        'readout = ["q0"]\n'      # mints q0_res (mode) + fl.q0 (channel)
         "[lines.xy0]\n"
-        'drive = ["q0"]\n',       # mints q0_xy
+        'drive = ["q0"]\n',       # mints xy0.q0
         encoding="utf-8",
     )
     # ...and a datasheet: the simulated vendor seeds readout_freq_hz from the
@@ -80,23 +80,25 @@ def test_scqo_run_end_to_end(tmp_path):
 
 def test_field_catalog_matches_implementation():
     """The declared field catalog cannot drift: per CHANNEL KIND, bindings plus the
-    declared Unrealized entries cover EXACTLY scqo's KNOB fields of that kind (a new
-    core knob fails here until this driver binds or declines it — the combo-release
-    alarm; monitors and facts are never pushed and must appear in neither), coupled
-    names are real sibling knobs, the vendor-only inventory collides with no neutral
-    field name, and the module is pure data (importable without qm/quam — enforced
-    on its import statements)."""
+    declared Unrealized entries cover EXACTLY scqo's KNOB fields of that kind - its
+    channel fields AND its line fields (since SCQO 4.0.0 a flux wire owns
+    idle_flux / flux_delay_s once, whatever rides it) - so a new core knob fails
+    here until this driver binds or declines it (the combo-release alarm; monitors
+    and facts are never pushed and must appear in neither), coupled names are real
+    sibling knobs, the vendor-only inventory collides with no neutral field name,
+    and the module is pure data (importable without qm/quam — enforced on its
+    import statements)."""
     import ast
 
-    from scqo.catalog import ALL_STATIC_FIELDS, CHANNELS
+    from scqo.catalog import ALL_FIELD_NAMES, CHANNELS
 
     from scqo_qm.backend import fieldmap
 
     assert set(fieldmap.FIELD_BINDINGS) == SERVED_KINDS
     assert set(fieldmap.UNREALIZED) <= SERVED_KINDS
     for kind in SERVED_KINDS:
-        knobs = {f for f, spec in CHANNELS[kind].fields.items()
-                 if spec.role == "knob"}
+        spec_fields = {**CHANNELS[kind].fields, **CHANNELS[kind].line_fields}
+        knobs = {f for f, spec in spec_fields.items() if spec.role == "knob"}
         bindings = fieldmap.FIELD_BINDINGS[kind]
         unrealized = fieldmap.UNREALIZED.get(kind, {})
         assert set(bindings) | set(unrealized) == knobs, kind
@@ -110,7 +112,7 @@ def test_field_catalog_matches_implementation():
             assert entry.category == kind and entry.field == name, name
             assert entry.reason, name
 
-    assert not set(fieldmap.VENDOR_ONLY) & ALL_STATIC_FIELDS
+    assert not set(fieldmap.VENDOR_ONLY) & ALL_FIELD_NAMES
     assert all(v.path and v.doc for v in fieldmap.VENDOR_ONLY.values())
 
     # every entry carries a valid placement-rule kind; unique entries must state
@@ -123,7 +125,7 @@ def test_field_catalog_matches_implementation():
             assert "no qblox counterpart" in v.doc.lower(), name
         # the operational half. `coupled` is checked the way binding.coupled is:
         # a typo or a half-deleted pairing must not survive as a dangling name.
-        assert set(v.coupled) <= (set(fieldmap.VENDOR_ONLY) | ALL_STATIC_FIELDS) - {name}, name
+        assert set(v.coupled) <= (set(fieldmap.VENDOR_ONLY) | ALL_FIELD_NAMES) - {name}, name
         # a tuple typo here would render as a Python repr on a lab console
         assert isinstance(v.edit, str) and isinstance(v.counterpart, str), name
         assert all(s.isascii() for s in (v.doc, v.edit, v.counterpart)), name
@@ -208,28 +210,31 @@ def test_distortion_hint_and_inventory_agree():
     assert QMBackend.distortion_apply_command(None, "q1").startswith(prefix)
 
 
-def test_composite_knob_catalog_covers_every_op_knob():
-    """The COMPOSITE half of the catalog (QM has a pair surface Qblox does not):
-    a pair's knob names are PER-OPERATION full names, so they are tabulated by
-    OP_KNOBS SUFFIX instead of by static field name. Bindings plus declared
-    Unrealized suffixes must cover scqo's OP_KNOBS exactly — the same drift
-    alarm, one level down."""
-    from scqo.catalog import OP_KNOBS
+def test_operation_knob_catalog_covers_every_operation_field():
+    """The OPERATION half of the catalog (QM has a pair surface Qblox does not):
+    since SCQO 4.0.0 each declared operation is an entity of its own
+    (``q1_q2.iswap``) carrying scqo's OPERATION_FIELDS by plain name. Bindings
+    plus declared Unrealized entries must cover its KNOB fields exactly — the
+    same drift alarm, one level down."""
+    from scqo.catalog import OPERATION_FIELDS
 
     from scqo_qm.backend import fieldmap
     from scqo_qm.backend.qm_backend import QMBackend
 
-    bound = set(fieldmap.OP_KNOB_BINDINGS)
-    declined = set(fieldmap.OP_KNOB_UNREALIZED)
-    assert bound | declined == set(OP_KNOBS)
+    knobs = {f for f, spec in OPERATION_FIELDS.items() if spec.role == "knob"}
+    bound = set(fieldmap.OPERATION_BINDINGS)
+    declined = set(fieldmap.OPERATION_UNREALIZED)
+    assert bound | declined == knobs
     assert not bound & declined
-    for name, binding in fieldmap.OP_KNOB_BINDINGS.items():
+    for name, binding in fieldmap.OPERATION_BINDINGS.items():
         assert binding.path, f"{name}: empty vendor path"
-    for name, entry in fieldmap.OP_KNOB_UNREALIZED.items():
-        assert entry.category == "qubit_pair" and entry.field == name, name
+    for name, entry in fieldmap.OPERATION_UNREALIZED.items():
+        # the scqo dataclass attribute is still spelled 'category'; for an
+        # operation it carries "operation"
+        assert entry.category == "operation" and entry.field == name, name
         assert entry.reason, name
-    assert QMBackend.op_knob_bindings(None) == (fieldmap.OP_KNOB_BINDINGS,
-                                                fieldmap.OP_KNOB_UNREALIZED)
+    assert QMBackend.operation_bindings(None) == fieldmap.OPERATION_BINDINGS
+    assert QMBackend.operation_unrealized(None) == fieldmap.OPERATION_UNREALIZED
 
 
 def test_backend_entry_point_resolves_and_guards_fire(tmp_path, roster):
@@ -297,25 +302,35 @@ def test_factory_runs_the_whole_tree_audits_on_the_loaded_state(tmp_path, roster
 def test_components_inventory_is_a_truthful_witness(backend, roster):
     """``components()`` is the doctor's WITNESS: exactly the entities this backend
     serves a view for, each reported with the ROSTER's kind (a kind disagreement
-    is a FAIL in scqo.checks.vendor_checks) and its derived operation. The pair
-    composite IS present here — unlike Qblox, QUAM exposes gate macros — and the
-    fixed-frequency q3 has no flux channel to miss."""
+    is a FAIL in scqo.checks.vendor_checks) and its derived operation. Since SCQO
+    4.0.0 that is every designed channel, every flux LINE and every declared
+    OPERATION — present here because, unlike Qblox, QUAM exposes gate macros —
+    and no borrowed channel (the stub tree adopts none). The fixed-frequency q3
+    has no flux channel to miss."""
     from scqo.checks import FAIL, vendor_checks
 
     inventory = backend.device.components()
 
-    expected = set(roster.channels()) | set(roster.composites())
+    flux_lines = {"z1", "z2", "zc"}
+    expected = (set(roster.channels()) | flux_lines
+                | set(roster.operation_entities()))
     assert set(inventory) == expected
+    assert not set(inventory) & set(roster.borrowed_channels())
     for name, info in inventory.items():
         entity = roster.entities[name]
         assert info.kind == entity.kind
-    assert inventory["q1_ro"].operations == ("readout",)
-    assert inventory["q1_xy"].operations == ("rx",)
-    assert inventory["q1_q2_c_z"].operations == ("flux_bias",)
-    # two DECLARED operations on the pair, deliberately of different macro
-    # shapes: the vendor CZGate and the lab's ISwapImplementation (conftest)
-    assert inventory["q1_q2"].operations == ("cz", "iswap")
-    assert inventory["q1_q2"].members["coupler"] == ("q1_q2_c",)
+    assert inventory["fl.q1"].operations == ("readout",)
+    assert inventory["xy1.q1"].operations == ("rx",)
+    assert inventory["zc.q1_q2_c"].operations == ("flux_bias",)
+    # the coupler's wire: a LINE, reported with the target it biases
+    assert inventory["zc"].kind == "line" and inventory["zc"].target == ("q1_q2_c",)
+    # two DECLARED operations on the pair, each its own entity and deliberately
+    # of different macro shapes: the vendor CZGate and the lab's
+    # ISwapImplementation (conftest)
+    assert inventory["q1_q2.cz"].operations == ("cz",)
+    assert inventory["q1_q2.iswap"].operations == ("iswap",)
+    assert inventory["q1_q2.cz"].target == ("q1_q2",)
+    assert inventory["q1_q2.cz"].members["coupler"] == ("q1_q2_c",)
 
     checks = vendor_checks(roster, inventory)
     assert not [c for c in checks if c.status == FAIL], checks
