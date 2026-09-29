@@ -46,7 +46,13 @@ CARRIERS = {"qubit_relaxation", "qubit_ramsey", "qubit_ramsey_phasor",
             "qubit_ramsey_flux_pulse",
             "qubit_echo", "qubit_power_rabi",
             "qubit_t1_ade", "qubit_t1_bayesian",
-            "qubit_spectroscopy"}
+            "qubit_spectroscopy",
+            # the chain family: a between-shots reset of every qubit a shot
+            # touches, one joint readout at a fixed condition (5Q4C 2026-09-29)
+            "qc_unidirectional_trotter", "qc_trotter_compensation"}
+
+#: the chain shells, which reset more qubits than they read out.
+CHAIN_SHELLS = ("qc_unidirectional_trotter", "qc_trotter_compensation")
 
 
 def _shell(name, **params):
@@ -226,6 +232,38 @@ def _active_carrier(name, backend, roster, **params):
     return make_experiment(cls, backend, roster,
                            cls.Parameters(targets=["q1"], reset_method="active",
                                           **params))
+
+
+def test_chain_shells_check_every_qubit_they_reset():
+    """A chain resets its pair members, reset qubit and prep qubit whether or not
+    they are read out, so the active-reset check must be handed that list: a
+    targets-only check would pass a run whose unread sink has no threshold."""
+    for name in CHAIN_SHELLS:
+        source = _module_source(name)
+        assert "check_reset_method(" in source, name
+        assert "qubits=chain_reset_qubits(self.params, source, relay, sink, prep)" in (
+            source), name
+
+
+def test_chain_reset_qubits_lists_targets_first_without_repeats():
+    from types import SimpleNamespace
+
+    from scqo_qm.experiments._chain_round import chain_reset_qubits
+
+    params = SimpleNamespace(targets=["q1", "q2"], reset_qubit="q2")
+    # the sink q3 is reset although it is not read out; the prep is the source
+    assert chain_reset_qubits(params, "q1", "q2", "q3", "q1") == ["q1", "q2", "q3"]
+
+
+def test_active_checks_a_reset_qubit_outside_the_targets(backend, stub_machine, roster):
+    """``qubits=`` widens the discriminator check past the targets: q1 is
+    calibrated, q2 is not, and a sequence that resets q2 must refuse by name."""
+    _calibrate(stub_machine)
+    _calibrate(stub_machine, target="q2", threshold=None, rus=None)
+    exp = _active_carrier("qubit_ramsey", backend, roster)
+    assert check_reset_method(exp) == "active"  # targets alone: q1 is fine
+    with pytest.raises(ValueError, match="needs q2's readout discriminator"):
+        check_reset_method(exp, qubits=["q1", "q2"])
 
 
 def test_active_returns_active_on_a_calibrated_stub(backend, stub_machine, roster):

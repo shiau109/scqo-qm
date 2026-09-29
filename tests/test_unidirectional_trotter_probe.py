@@ -234,6 +234,38 @@ def test_build_program_renders_the_trotter_round(live_chain):
         assert shifts[0] - shifts[1] == pytest.approx(50e6)
 
 
+def test_active_reset_initializes_every_involved_qubit(live_chain):
+    """reset_type='active' EXECUTES QUAM's reset_qubit_active for each involved
+    qubit, so the build proves the kwarg threads through (max_attempts) and the
+    whole program serialises. Thresholds are written in memory and restored;
+    whether the live state is calibrated is check_reset_method's question."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    pulses = [machine.qubits[name].resonator.operations["readout"] for name in CHAIN]
+    saved = [(p.threshold, p.rus_exit_threshold) for p in pulses]
+    try:
+        for pulse in pulses:
+            pulse.threshold, pulse.rus_exit_threshold = -1.0e-4, -2.0e-4
+        thermal, _ = build_program(**_live_kwargs(machine))
+        active, _ = build_program(**_live_kwargs(
+            machine, reset_type="active", reset_max_attempts=2))
+        config = machine.generate_config()
+        text_thermal = generate_qua_script(thermal, config)
+        text_active = generate_qua_script(active, config)
+    finally:
+        for pulse, (threshold, rus) in zip(pulses, saved):
+            pulse.threshold, pulse.rus_exit_threshold = threshold, rus
+    # thermal measures only in the final readout; active adds QUAM's reset
+    # measurements (how many per qubit is QUAM's business) in front of the
+    # prep, on every involved qubit
+    assert text_active.count("measure(") > text_thermal.count("measure(")
+    assert text_thermal[:text_thermal.index('play("x180"')].count("measure(") == 0
+    before_prep = text_active[:text_active.index('play("x180"')]
+    for name in CHAIN:
+        assert f'"{name}.resonator"' in before_prep
+
+
 def test_the_round_is_swap_swap_reset_stark_in_that_order(live_chain):
     """The relay is dumped AFTER both swaps: reset it earlier and the second
     swap would carry nothing, which is the whole mechanism. The compensation

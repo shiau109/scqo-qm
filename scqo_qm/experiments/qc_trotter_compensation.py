@@ -7,7 +7,9 @@ identical, and deliberately so -- this scan exists to calibrate that exact
 sequence, so any divergence would calibrate something else.
 
 Circuit per shot (for a swept compensation amplitude a and step count N):
-  1. Initialize every involved qubit with ``q.reset(reset_type, simulate)``.
+  1. Initialize every involved qubit with ``q.reset(reset_type, simulate,
+     max_attempts=reset_max_attempts)`` - the between-shots thermal or active
+     reset, the same as ``qc_unidirectional_trotter``'s.
   2. State prep: ``prep_qubit.xy.play(prep_operation)``, ONCE, at the resonant IF.
   3. Detune every compensated qubit's xy by ``stark_detuning_hz``
      (``update_frequency``), hoisted out of the loops.
@@ -48,7 +50,7 @@ schema in ``reduce_raw``.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence
 
 import numpy as np
 import xarray as xr
@@ -58,7 +60,7 @@ from qualang_tools.loops import from_array
 
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
-from scqo_qm.experiments._chain_round import idle_wait_cycles
+from scqo_qm.experiments._chain_round import chain_reset_qubits, idle_wait_cycles
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
 
@@ -117,6 +119,7 @@ def build_program(
     num_shots: int,
     reset_type: str,
     keep_shots: bool,
+    reset_max_attempts: int = 15,
     operation_gap_ns: int = 0,
     first_coupler_amp: Optional[float] = None,
     second_coupler_amp: Optional[float] = None,
@@ -251,7 +254,8 @@ def build_program(
             with for_(*from_array(a, compensation_amps)):
                 with for_(*from_array(r, rounds_array)):
                     for qubit in involved:
-                        qubit.reset(reset_type, simulate)
+                        qubit.reset(reset_type, simulate,
+                                    max_attempts=reset_max_attempts)
                     align()
 
                     # State prep: ONE excitation on the chain source, resonant IF.
@@ -351,17 +355,22 @@ from scqo_qm.experiments.qc_unidirectional_trotter import _vendor_operation
 class QMQcTrotterCompensation(QcTrotterCompensation):
     """Build, run and fetch the Trotter-chain compensation scan on the QM OPX."""
 
+    #: Active reset is valid here for the same reason as in
+    #: qc_unidirectional_trotter, whose parameter file this scan shares: a fixed
+    #: readout condition, and a genuine between-shots state reset. The relay's
+    #: mid-circuit parametric reset is untouched.
+    supports_active_reset: ClassVar[bool] = True
+
     def probe(self) -> Any:
-        from ._reset import check_reset_method
+        from ._reset import check_reset_method, reset_max_attempts
         from ._vendor import vendor_pair, vendor_qubit
 
-        # One door for the reset method: this shell does not opt into active
-        # reset (default DENY). Note this is the BETWEEN-SHOTS reset, not the
-        # mid-circuit parametric one the round plays.
-        reset = check_reset_method(self)
         # The chain topology comes from scqo's own resolver, so the neutral layer
         # and the probe can never disagree about which member is the relay.
-        _source, _relay, _sink, prep = chain_roles(self.device.roster, self.params)
+        source, relay, sink, prep = chain_roles(self.device.roster, self.params)
+        # One door for the reset method, over EVERY qubit a shot resets.
+        reset = check_reset_method(
+            self, qubits=chain_reset_qubits(self.params, source, relay, sink, prep))
         (first_name, first_op), (second_name, second_op) = pair_specs(self.params)
 
         machine = self.backend.machine  # type: ignore[attr-defined]
@@ -400,6 +409,7 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
             rounds_array=np.asarray(self.sweep_axes["round_count"]).astype(int),
             num_shots=int(self.params.num_averages),
             reset_type=reset,
+            reset_max_attempts=reset_max_attempts(self),
             keep_shots=self.params.readout_mode == "shot",
             operation_gap_ns=int(self.params.operation_gap_ns),
             first_coupler_amp=coupler_flux.get(first_name),

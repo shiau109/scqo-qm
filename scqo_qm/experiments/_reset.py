@@ -26,7 +26,12 @@ readout condition is frozen for the whole run AND the reset is a genuine state
 reset — the coherent-drive carriers (relaxation, ramsey, echo, power_rabi, the
 two T1 trackers) plus ``qubit_spectroscopy``, whose saturation drive is a finite
 pulse that has ended by the time the reset runs and which sweeps only the DRIVE
-frequency. ``readout_frequency`` / ``readout_power`` SWEEP the readout condition;
+frequency, plus the two CHAIN shells (``qc_unidirectional_trotter`` and the
+``qc_trotter_compensation`` scan that shares its parameter file): one joint
+readout at a fixed condition per shot, and a between-shots reset of every qubit
+the shot touches — which is why they pass ``check_reset_method`` their full
+reset list, not their targets. Their relay's mid-circuit reset is a parametric
+macro and never becomes a measurement. ``readout_frequency`` / ``readout_power`` SWEEP the readout condition;
 ``single_shot_readout`` IS the calibration itself (and a conditional pi driven by
 the very threshold being measured biases the |1> blob). Each of those refuses BY
 NAME (default DENY via the :data:`ACTIVE_RESET_ATTR` ClassVar). Opting a new
@@ -100,7 +105,8 @@ ACTIVE_RESET_ATTR = "supports_active_reset"
 
 #: The four that opt in, for the refusal message only (the authority is the class
 #: attribute — this is a hint, and the census test keeps it honest).
-_CARRIERS = "qubit_relaxation, qubit_ramsey, qubit_echo, qubit_power_rabi"
+_CARRIERS = ("qubit_relaxation, qubit_ramsey, qubit_echo, qubit_power_rabi, "
+             "qc_unidirectional_trotter")
 
 #: QUAM ``ReadoutResonator.depletion_time`` factory default (ns). An ungoverned
 #: depletion sits at exactly this, and active reset refuses it — see rule (3).
@@ -147,13 +153,19 @@ def _resolved_depletion_ns(experiment: Any, target: str) -> float | None:
         return None
 
 
-def check_reset_method(experiment: Any) -> str:
+def check_reset_method(experiment: Any, qubits: Any = None) -> str:
     """This run's QM reset method, after refusing everything QM cannot honour.
 
     Returns ``"thermal"`` or ``"active"``; raises ``ValueError`` naming the
     experiment and the reason. Side-effect free, because it is called TWICE: once
     by every shell's ``probe()`` and once by ``QMBackend.acquire`` before
     ``probe()`` — the backstop that fires even if a shell forgets the helper.
+
+    ``qubits`` names every qubit the sequence RESETS, when that is more than its
+    targets: a chain resets the pair members, the reset qubit and the prep qubit
+    whether or not they are read out, and an active reset thresholds each of
+    them against its own discriminator. Default: ``params.targets``. The
+    backend's backstop call passes nothing, so the shell's call is the strict one.
 
     Order is load-bearing: the pure checks (which run on a device-less shell)
     come before any device read, and the discriminator before the settle —
@@ -197,7 +209,8 @@ def check_reset_method(experiment: Any) -> str:
         )
 
     # Device reads last. Discriminator before the settle (see the docstring).
-    for target in experiment.params.targets:
+    reset_qubits = list(experiment.params.targets if qubits is None else qubits)
+    for target in reset_qubits:
         missing = _missing_discriminator_knobs(experiment, target)
         if missing:
             raise ValueError(
@@ -212,7 +225,7 @@ def check_reset_method(experiment: Any) -> str:
                 f"`scqo accept`, then re-run — or set it directly with "
                 f"`scqo set {target}.readout_threshold=...`."
             )
-    for target in experiment.params.targets:
+    for target in reset_qubits:
         settle_ns = _resolved_depletion_ns(experiment, target)
         if settle_ns is None or settle_ns == _FACTORY_DEPLETION_NS:
             raise ValueError(

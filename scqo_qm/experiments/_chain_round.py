@@ -1,4 +1,5 @@
-"""The chain shells' round step: how long an ``idle`` step waits.
+"""The chain shells' shared rules: how long an ``idle`` step waits, and which
+qubits a shot resets.
 
 Both chain probes (``qc_unidirectional_trotter``, ``qc_trotter_compensation``)
 accept ``operation="idle"`` on either of their two round steps. An idle step
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 from ._coupler_knob import find_coupler_pulse
 
-__all__ = ["idle_wait_cycles"]
+__all__ = ["chain_reset_qubits", "idle_wait_cycles"]
 
 #: QUA's floor for ``wait()``. A shorter wait is not a short wait -- it is a
 #: compile error naming an internal variable, which is how the xy-z delay shell
@@ -76,3 +77,18 @@ def idle_wait_cycles(pair, reference_operation: str) -> int:
             f"flux pulse, below QUA's {MIN_WAIT_CYCLES * 4} ns minimum wait, so "
             f"an 'idle' step on this pair cannot be expressed at all.")
     return cycles
+
+
+def chain_reset_qubits(params, source: str, relay: str, sink: str,
+                       prep: str) -> list[str]:
+    """Every qubit a chain shot RESETS, by roster name, targets first.
+
+    The builders reset the measured qubits, both pairs' members, the reset
+    qubit and the prep qubit — whether or not all of them are read out. An
+    ACTIVE reset thresholds each one against its own readout discriminator, so
+    ``check_reset_method`` must see this list rather than the targets alone: a
+    sink left out of ``targets`` is still reset, and an uncalibrated threshold
+    there would die inside the QUA DSL naming nothing.
+    """
+    names = [*params.targets, source, relay, sink, params.reset_qubit, prep]
+    return list(dict.fromkeys(names))
