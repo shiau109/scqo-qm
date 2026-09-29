@@ -10,7 +10,9 @@ Circuit per shot (for a swept compensation amplitude a and step count N):
   1. Initialize every involved qubit with ``q.reset(reset_type, simulate,
      max_attempts=reset_max_attempts)`` - the between-shots thermal or active
      reset, the same as ``qc_unidirectional_trotter``'s.
-  2. State prep: ``prep_qubit.xy.play(prep_operation)``, ONCE, at the resonant IF.
+  2. State prep: ``qubit.xy.play(operation)`` for each ``(qubit, operation)`` in
+     ``prep``, ONCE, at the resonant IF. scqo lets this scan prepare exactly one
+     qubit; the builder takes the chain probe's shape all the same.
   3. Detune every compensated qubit's xy by ``stark_detuning_hz``
      (``update_frequency``), hoisted out of the loops.
   4. Repeat N times: bare ``first_pair`` swap, bare ``second_pair`` swap, bare
@@ -68,7 +70,7 @@ def _dedup_involved(measure_qubits, pairs, extra) -> List:
     """The unique (by ``.name``) qubit elements that must be initialized.
 
     The measured qubits need not include the pairs' members, the reset qubit or
-    the prep qubit, but every one of them is pulsed and so must be
+    the prep qubits, but every one of them is pulsed and so must be
     flux-initialized and reset at the start of each shot."""
     involved: List = []
     seen = set()
@@ -101,8 +103,7 @@ def build_program(
     second_pair,
     reset_qubit,
     *,
-    prep_qubit,
-    prep_operation: str,
+    prep: Sequence[tuple],
     # None = an IDLE step: play nothing, wait the swap's length instead. The
     # neutral layer spells that "idle"; the word is translated in probe() so this
     # builder stays vendor-only, and None cannot collide with a macro key.
@@ -130,7 +131,8 @@ def build_program(
     Returns ``(program, sweep_axes)``.
 
     ``measure_qubits`` is a plain list of qubit objects read out at the end of
-    the circuit, IN CHAIN ORDER. ``compensation`` is a sequence of
+    the circuit, IN CHAIN ORDER. ``prep`` is a sequence of ``(qubit object, xy
+    operation)`` pairs played once before the rounds. ``compensation`` is a sequence of
     ``(qubit object, amplitude factor)`` pairs held FIXED; ``swept_qubit`` is the
     one whose tone carries the swept ``compensation_amps`` factors instead, and
     it must NOT also appear in ``compensation`` (scqo refuses that upstream, and
@@ -146,6 +148,7 @@ def build_program(
     num_qubits = len(measure_qubits)
     rounds_array = np.asarray(rounds_array).astype(int)
     compensation_amps = np.asarray(compensation_amps, dtype=float)
+    prep = list(prep)
     compensation = list(compensation)
 
     if operation_gap_ns < 0 or operation_gap_ns % 4 != 0:
@@ -167,10 +170,11 @@ def build_program(
         else:
             _check_macro(pair, operation, what)
     _check_macro(reset_qubit, reset_operation, "reset_qubit")
-    if prep_operation not in prep_qubit.xy.operations:
-        raise ValueError(
-            f"prep_qubit {prep_qubit.name} has no xy operation "
-            f"{prep_operation!r}; available: {list(prep_qubit.xy.operations)}.")
+    for qubit, operation in prep:
+        if operation not in qubit.xy.operations:
+            raise ValueError(
+                f"prep qubit {qubit.name} has no xy operation {operation!r}; "
+                f"available: {list(qubit.xy.operations)}.")
     fixed_names = {qubit.name for qubit, _factor in compensation}
     if swept_qubit.name in fixed_names:
         raise ValueError(
@@ -208,7 +212,7 @@ def build_program(
             label=f"{pair.name} swap_coupler_flux")
 
     involved = _dedup_involved(measure_qubits, [first_pair, second_pair],
-                               [reset_qubit, prep_qubit])
+                               [reset_qubit, *(qubit for qubit, _op in prep)])
     # Every qubit that plays a tone needs its IF detuned, the swept one included.
     toned = [qubit for qubit, _factor in compensation] + [swept_qubit]
     base_if = {qubit.name: qubit.xy.intermediate_frequency for qubit in toned}
@@ -258,8 +262,9 @@ def build_program(
                                     max_attempts=reset_max_attempts)
                     align()
 
-                    # State prep: ONE excitation on the chain source, resonant IF.
-                    prep_qubit.xy.play(prep_operation)
+                    # State prep, once, resonant IF (one qubit: scqo refuses more).
+                    for qubit, operation in prep:
+                        qubit.xy.play(operation)
                     align()
 
                     # Detune the compensated qubits so their tones shift rather
@@ -393,8 +398,9 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
             # goes through the z channel
             vendor_qubit(self, self.params.reset_qubit, field="reset_qubit",
                          kind="flux"),
-            prep_qubit=vendor_qubit(self, prep, field="prep_qubit"),
-            prep_operation=self.params.prep_operation,
+            # the RESOLVED prep: None has already become {source: "x180"}
+            prep=[(vendor_qubit(self, name, field="prep_operations"), operation)
+                  for name, operation in prep.items()],
             first_operation=_vendor_operation(first_op),
             second_operation=_vendor_operation(second_op),
             idle_reference_operation=self.params.idle_reference_operation,

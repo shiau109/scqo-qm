@@ -17,6 +17,8 @@ chances to get it wrong.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from ._coupler_knob import find_coupler_pulse
 
 __all__ = ["chain_reset_qubits", "idle_wait_cycles"]
@@ -80,15 +82,17 @@ def idle_wait_cycles(pair, reference_operation: str) -> int:
 
 
 def chain_reset_qubits(params, source: str, relay: str, sink: str,
-                       prep: str) -> list[str]:
+                       prep: Iterable[str]) -> list[str]:
     """Every qubit a chain shot RESETS, by roster name, targets first.
 
-    The builders reset the measured qubits, both pairs' members, the reset
-    qubit and the prep qubit — whether or not all of them are read out. An
+    ``prep`` is the resolved prep map from scqo's ``chain_roles`` (or any
+    iterable of its qubit names). The builders reset the measured qubits, both
+    pairs' members, the reset qubit and every prep qubit — whether or not all
+    of them are read out. An
     ACTIVE reset thresholds each one against its own readout discriminator, so
     ``check_reset_method`` must see this list rather than the targets alone: a
     sink left out of ``targets`` is still reset, and an uncalibrated threshold
     there would die inside the QUA DSL naming nothing.
     """
-    names = [*params.targets, source, relay, sink, params.reset_qubit, prep]
+    names = [*params.targets, source, relay, sink, params.reset_qubit, *prep]
     return list(dict.fromkeys(names))

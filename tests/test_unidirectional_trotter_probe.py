@@ -71,8 +71,7 @@ def _kwargs(**overrides):
         first_pair=_pair("q1_q2"),
         second_pair=_pair("q2_q3"),
         reset_qubit=q2,
-        prep_qubit=q1,
-        prep_operation="x180",
+        prep=[(q1, "x180")],
         first_operation=SWAP,
         second_operation=SWAP,
         idle_reference_operation=SWAP,
@@ -97,7 +96,10 @@ def _kwargs(**overrides):
         ({"first_pair": _pair("q1_q2", macros=())}, "no macro 'iswap'"),
         ({"second_pair": _pair("q2_q3", macros=("cz",))}, "no macro 'iswap'"),
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
-        ({"prep_operation": "x270"}, "no xy operation 'x270'"),
+        ({"prep": [(_qubit("q1"), "x270")]}, "no xy operation 'x270'"),
+        # every prep entry is checked, not just the first
+        ({"prep": [(_qubit("q1"), "x180"), (_qubit("q3", ops=("stark",)), "x180")]},
+         "prep qubit q3 has no xy operation 'x180'"),
         ({"stark_operation": "tone"}, "no xy operation 'tone'"),
         # an idle step still needs a DURATION, and it comes from a real macro:
         # a pair that does not carry the reference cannot idle for the right
@@ -130,7 +132,7 @@ def test_an_unrepresentable_compensation_factor_is_refused():
     with pytest.raises(ValueError, match="compensation_amps"):
         build_program(**_kwargs(compensation=[(q1, 0.3), (q2, 2.5)],
                                 measure_qubits=[q1, q2, q3], reset_qubit=q2,
-                                prep_qubit=q1))
+                                prep=[(q1, "x180")]))
 
 
 def test_reduce_raw_names_the_readout_form():
@@ -190,8 +192,7 @@ def _live_kwargs(machine, **overrides):
         first_pair=machine.qubit_pairs[PAIRS[0]],
         second_pair=machine.qubit_pairs[PAIRS[1]],
         reset_qubit=machine.qubits["q2"],
-        prep_qubit=machine.qubits["q1"],
-        prep_operation="x180",
+        prep=[(machine.qubits["q1"], "x180")],
         first_operation=SWAP,
         second_operation=SWAP,
         idle_reference_operation=SWAP,
@@ -431,6 +432,34 @@ def test_probe_matches_the_direct_build(live_chain):
     # the prep qubit was DERIVED: q1 is the first_pair member absent from
     # second_pair, and nothing in the params named it
     assert script(from_probe).count('play("x180"') == 1
+
+
+def test_a_two_qubit_prep_plays_both_before_the_first_round(live_chain):
+    """prep_operations={q1: x180, q3: x180} starts the chain in |101>: each end
+    plays its pulse ONCE, before the first swap, and probe() hands the neutral
+    map to the builder as the same list a direct call takes."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    ends = [(machine.qubits["q1"], "x180"), (machine.qubits["q3"], "x180")]
+    direct, _axes = build_program(**_live_kwargs(machine, prep=ends))
+    text = script(direct)
+    assert text.count('play("x180"') == 2
+    body = text[text.index('play("x180"'):]
+    first_swap = body.index(f'"{PAIRS[0]}")')
+    for name in ("q1", "q3"):
+        assert body.index(f'play("x180", "{name}.xy")') < first_swap, name
+
+    _backend, exp = _live_experiment(machine, readout_mode="shot",
+                                     prep_operations={"q1": "x180", "q3": "x180"})
+    from_probe, _axes = exp.probe()
+    assert script(from_probe) == text
 
 
 def test_probe_translates_the_neutral_idle_into_the_builders_none(live_chain):

@@ -252,7 +252,11 @@ def test_chain_reset_qubits_lists_targets_first_without_repeats():
 
     params = SimpleNamespace(targets=["q1", "q2"], reset_qubit="q2")
     # the sink q3 is reset although it is not read out; the prep is the source
-    assert chain_reset_qubits(params, "q1", "q2", "q3", "q1") == ["q1", "q2", "q3"]
+    assert chain_reset_qubits(params, "q1", "q2", "q3",
+                              {"q1": "x180"}) == ["q1", "q2", "q3"]
+    # every prep qubit is reset, one off the chain included
+    assert chain_reset_qubits(params, "q1", "q2", "q3",
+                              {"q1": "x180", "q4": "x180"}) == ["q1", "q2", "q3", "q4"]
 
 
 def test_active_checks_a_reset_qubit_outside_the_targets(backend, stub_machine, roster):

@@ -72,8 +72,7 @@ def _kwargs(**overrides):
         first_pair=_pair("q1_q2"),
         second_pair=_pair("q2_q3"),
         reset_qubit=q2,
-        prep_qubit=q1,
-        prep_operation="x180",
+        prep=[(q1, "x180")],
         first_operation=SWAP,
         second_operation=SWAP,
         idle_reference_operation=SWAP,
@@ -108,7 +107,7 @@ def _kwargs(**overrides):
         ({"first_operation": None, "first_coupler_amp": 0.04},
          "is an idle step but was given a coupler amplitude"),
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
-        ({"prep_operation": "x270"}, "no xy operation 'x270'"),
+        ({"prep": [(_qubit("q1"), "x270")]}, "no xy operation 'x270'"),
         ({"stark_operation": "tone"}, "no xy operation 'tone'"),
     ],
 )
@@ -126,7 +125,7 @@ def test_the_swept_qubit_may_not_also_be_a_fixed_tone():
     q2.macros[RESET_MACRO] = SimpleNamespace()
     with pytest.raises(ValueError, match="play TWICE per round"):
         build_program(**_kwargs(measure_qubits=[q1, q2, q3], reset_qubit=q2,
-                                prep_qubit=q1, swept_qubit=q1,
+                                prep=[(q1, "x180")], swept_qubit=q1,
                                 compensation=[(q1, 0.3)]))
 
 
@@ -149,7 +148,7 @@ def test_a_missing_stark_op_on_the_SWEPT_qubit_is_caught():
     bare = _qubit("q1", ops=("x180",))          # no 'stark'
     with pytest.raises(ValueError, match="no xy operation 'stark'"):
         build_program(**_kwargs(measure_qubits=[q1, q2, q3], reset_qubit=q2,
-                                prep_qubit=q1, swept_qubit=bare,
+                                prep=[(q1, "x180")], swept_qubit=bare,
                                 compensation=[(q3, 0.25)]))
 
 
@@ -206,8 +205,7 @@ def _live_kwargs(machine, **overrides):
         first_pair=machine.qubit_pairs[PAIRS[0]],
         second_pair=machine.qubit_pairs[PAIRS[1]],
         reset_qubit=machine.qubits["q2"],
-        prep_qubit=machine.qubits["q1"],
-        prep_operation="x180",
+        prep=[(machine.qubits["q1"], "x180")],
         first_operation=SWAP,
         second_operation=SWAP,
         idle_reference_operation=SWAP,
