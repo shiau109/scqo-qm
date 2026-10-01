@@ -129,6 +129,9 @@ scqo_qm/
     _vendor.py           # the one door out of the neutral surface (raw QUAM element by ROSTER)
     _pair_roles.py       # joint-population digit reordering for the pair maps
     _qc_populations.py   # shared swap-reset population math
+    _pair_swap_round.py  # the repeated-swap round (reset, x180, N x [swap, gap, stark],
+                         #   coherent IF restore) shared by qc_n_stark_amp and
+                         #   qc_n_swap_tomography, so their compensations compare directly
     _readout_fidelity.py # shared SSRO builder (single_shot_readout / thermal_population)
     _resonator_spectroscopy.py  # shared 1D builder (resonator_spectroscopy / _power_chain)
     _coupler_tone.py     # the coupler tone's run-scoped LO move (moved_lo_config): only

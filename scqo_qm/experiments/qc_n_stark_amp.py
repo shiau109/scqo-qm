@@ -15,9 +15,11 @@ Circuit per shot (for a swept stark amplitude factor a and swap count N):
      (involved = measured qubits + the swap pair's control/target).
   2. State prep: ``swap_pair.qubit_control.xy.play("x180")`` (at the RESONANT IF).
   3. Detune the control xy by ``stark_detuning_hz`` (``update_frequency``).
-  4. Repeat N times: bare ``macros[swap_operation].apply()`` then
-     ``qubit_control.xy.play(stark_operation, amplitude_scale=a)``, then idle the
-     pair's flux lines for ``operation_gap_ns`` (if nonzero).
+  4. Repeat N times: bare ``macros[swap_operation].apply()``, an idle of the
+     pair's flux lines for ``operation_gap_ns`` (if nonzero), then
+     ``qubit_control.xy.play(stark_operation, amplitude_scale=a)``.
+     (Steps 1-4 are ``_pair_swap_round.play_swap_round``, shared with
+     qc_n_swap_tomography.)
   5. Restore the control xy IF, then read out every measured qubit.
 
 Reading the measured qubits versus (stark amplitude, N) gives a 2D population map
@@ -45,7 +47,7 @@ from ``scqo.experiments.QcNStarkAmp``. This adapter:
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 import numpy as np
 import xarray as xr
@@ -54,22 +56,13 @@ from qm.qua import *
 from qualang_tools.loops import from_array
 
 from scqo_qm.experiments._lib import acquire as _acquire
-from scqo_qm.experiments._amp_limits import check_amp_scale_window
-
-
-def _dedup_involved(measure_qubits, swap_pair) -> List:
-    """Return the unique (by `.name`) set of qubit elements that must be initialized.
-
-    The measured qubits need not include the swap pair's control/target, but all of them
-    must be flux-initialized and reset at the start of each shot.
-    """
-    involved = []
-    seen = set()
-    for q in list(measure_qubits) + [swap_pair.qubit_control, swap_pair.qubit_target]:
-        if q.name not in seen:
-            seen.add(q.name)
-            involved.append(q)
-    return involved
+from scqo_qm.experiments._pair_swap_round import (
+    check_swap_round,
+    dedup_involved,
+    gap_cycles as _gap_cycles,
+    play_swap_round,
+    stark_ifs,
+)
 
 
 def build_program(
@@ -101,44 +94,22 @@ def build_program(
     detuning of that tone. All measured qubits are read out within the same shot (joint /
     multiplexed readout), since they share one circuit.
 
-    `operation_gap_ns` (multiple of 4, default 0) idles the swap pair's flux lines after
-    each swap+stark, so the pulses can settle before the next swap fires (the gap also
-    separates the last swap from readout).
+    `operation_gap_ns` (multiple of 4, default 0) idles the swap pair's flux lines between
+    each swap and its stark tone (swap -> gap -> stark), so the swap's flux pulse settles
+    before the tone plays. The round itself is `_pair_swap_round.play_swap_round`.
     """
     measure_qubits = list(measure_qubits)
     num_qubits = len(measure_qubits)
     rounds_array = np.asarray(rounds_array).astype(int)
     stark_amps = np.asarray(stark_amps, dtype=float)
 
-    if operation_gap_ns < 0 or operation_gap_ns % 4 != 0:
-        raise ValueError(f"operation_gap_ns must be a non-negative multiple of 4 ns, got {operation_gap_ns}.")
-    gap_cycles = operation_gap_ns // 4
-
-    involved = _dedup_involved(measure_qubits, swap_pair)
-    ctrl = swap_pair.qubit_control
-
-    # Validate the swap macro's flux path (the swap plays BARE at its baked amplitude, so
-    # no rail-sweep check — only that the macro and its z flux pulse exist and are playable).
-    if swap_operation not in swap_pair.macros:
-        raise ValueError(f"Pair {swap_pair.name} has no macro {swap_operation!r}; available: {list(swap_pair.macros)}.")
-    flux_pulse_name = getattr(swap_pair.macros[swap_operation], "flux_pulse", None)
-    if not isinstance(flux_pulse_name, str) or flux_pulse_name not in ctrl.z.operations:
-        raise ValueError(
-            f"Macro {swap_operation!r} on {swap_pair.name} has no z flux_pulse playable on "
-            f"{ctrl.name}.z (flux_pulse={flux_pulse_name!r})."
-        )
-    # Validate the swept AC-Stark tone: the operation must exist on the control's xy line,
-    # and the amplitude-factor window must be expressible by QUA's dynamic amplitude_scale.
-    if stark_operation not in ctrl.xy.operations:
-        raise ValueError(
-            f"Qubit {ctrl.name} has no xy operation {stark_operation!r}; available: "
-            f"{list(ctrl.xy.operations)}. Register it first (quam_config/register_stark.py)."
-        )
-    check_amp_scale_window(stark_amps, name=f"{ctrl.name}.xy {stark_operation!r}",
-                           knob="max_stark_amp")
-
-    base_if = ctrl.xy.intermediate_frequency          # resonant IF (x180 + readout)
-    stark_if = int(stark_detuning_hz) + base_if        # off-resonant IF for the stark tone
+    gap = _gap_cycles(operation_gap_ns)
+    involved = dedup_involved(measure_qubits, swap_pair)
+    # The swap plays BARE at its baked amplitude (no rail-sweep check), so only the
+    # macro, its z flux pulse and the swept stark tone are validated.
+    check_swap_round(swap_pair, swap_operation=swap_operation,
+                     stark_operation=stark_operation, stark_amps=stark_amps)
+    base_if, stark_if = stark_ifs(swap_pair, stark_detuning_hz)
 
     # With state discrimination we save the per-shot discriminated states (so the joint
     # multi-qubit populations can be reconstructed downstream), hence the extra `shot` axis.
@@ -186,40 +157,11 @@ def build_program(
             with for_(*from_array(q_a, stark_amps)):
                 # Swap-count loop (inner -> x axis)
                 with for_(*from_array(r, rounds_array)):
-                    # Initialization: thermalize / actively reset every involved qubit.
-                    for q in involved:
-                        q.reset(reset_type, simulate)
-                    align()
-
-                    # State prep: excite the swap pair's control qubit to |1> (resonant IF).
-                    ctrl.xy.play("x180")
-                    align()
-
-                    # Detune the control's xy so the stark tone is off-resonant (a Stark
-                    # SHIFT, not a rotation). Hoisted outside the swap loop: the control's
-                    # xy frequency only matters for the stark play, and x180 (above) and
-                    # readout (below) run at the resonant IF.
-                    ctrl.xy.update_frequency(stark_if)
-
-                    # Circuit body: N swaps on the pair, each bare (fixed baked amplitude),
-                    # each followed SEQUENTIALLY by the swept off-resonant stark tone on the
-                    # control xy. The swap and the stark do NOT overlap: apply() ends with the
-                    # pair's align() (FluxTunableTransmonPair.align aligns every channel of both
-                    # qubits, INCLUDING control.xy), so the control's xy timeline is synced to the
-                    # end of the swap before the stark plays.
-                    # Dynamic loop bound on r -> N=0 skips the body entirely (baseline).
-                    # `gap_cycles` idles the pair BETWEEN the swap and the stark tone, so the
-                    # swap's flux pulse settles before the stark tone plays.
-                    with for_(rr, 0, rr < r, rr + 1):
-                        swap_pair.macros[swap_operation].apply()
-                        if gap_cycles > 0:
-                            swap_pair.wait(gap_cycles)
-                        ctrl.xy.play(stark_operation, amplitude_scale=q_a)
-                        align()
-
-                    # Restore the resonant IF before readout.
-                    ctrl.xy.update_frequency(base_if)
-                    align()
+                    play_swap_round(
+                        involved, swap_pair, swap_operation=swap_operation,
+                        stark_operation=stark_operation, stark_amp=q_a, swap_count=r,
+                        counter=rr, gap=gap, base_if=base_if, stark_if=stark_if,
+                        reset_type=reset_type, simulate=simulate)
 
                     # Joint (multiplexed) readout of all measured qubits.
                     for i, qubit in enumerate(measure_qubits):
