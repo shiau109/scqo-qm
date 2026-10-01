@@ -7,10 +7,22 @@ times: the bare swap macro (its baked amplitudes), an idle of
 swept ``amplitude_scale``; restore the resonant IF. What follows (a readout, or
 tomography pre-rotations and then a readout) is the caller's.
 
-``update_frequency`` keeps its default ``keep_phase=False`` - the COHERENT mode:
-switching back to the base IF gives the phase the base IF would have had all
-along, so the control's idle frame is intact for whatever plays next. The
-tomography relies on that.
+TWO FLAVOURS of the same physical round:
+
+* ``switch_if=True`` (qc_n_stark_amp): the stark tone is the plain ``stark``
+  envelope, made off-resonant by ``update_frequency`` to the stark IF and back.
+  Fine for a reading of POPULATIONS.
+* ``switch_if=False`` + ``reset_phase_of`` (qc_n_swap_tomography): the stark
+  operation carries its detuning IN its waveform, so the round never switches a
+  frequency, and the given elements' frames, IF phases and the global phase
+  (upconverters included) are re-referenced at the start of every shot. A reading
+  of the COHERENCE between two members needs both: without the per-shot reset the
+  two drive frames' relative phase, (f_high - f_low) x the shot's absolute start
+  time, changes from shot to shot and the coherence averages away; and the
+  ``update_frequency`` round trip does not mix with that reset (5Q4C 2026-10-01:
+  with it the stark tone drove the control resonantly, P(00) 0.54-0.61 after one
+  swap, and no coherence came back; without it, with the reset, |coherence|
+  0.55-0.68 at N=1-3 against 0.02-0.06 unreset - SCQO BACKLOG I35).
 
 The two experiments must play the SAME round (their compensations are compared
 directly), which is why it lives once, here. The QUA it emits is the one
@@ -21,7 +33,7 @@ from __future__ import annotations
 
 from typing import List
 
-from qm.qua import align, for_
+from qm.qua import align, for_, reset_frame, reset_global_phase, reset_if_phase
 
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
 
@@ -75,18 +87,27 @@ def stark_ifs(swap_pair, stark_detuning_hz: float) -> tuple[int, int]:
 
 def play_swap_round(involved, swap_pair, *, swap_operation: str, stark_operation: str,
                     stark_amp, swap_count, counter, gap: int, base_if: int, stark_if: int,
-                    reset_type: str, simulate: bool) -> None:
+                    reset_type: str, simulate: bool, switch_if: bool = True,
+                    reset_phase_of=()) -> None:
     """Emit one shot's prefix: reset, prep, ``swap_count`` rounds, IF restored.
 
     ``stark_amp`` / ``swap_count`` are QUA variables (or values) of the caller's
     loops; ``counter`` is a declared QUA int for the inner round loop; ``gap`` is
-    in clock cycles (``gap_cycles``). Ends with an ``align()``."""
+    in clock cycles (``gap_cycles``). ``switch_if`` / ``reset_phase_of`` select the
+    flavour (module docstring). Ends with an ``align()``."""
     ctrl = swap_pair.qubit_control
 
     # Initialization: thermalize / actively reset every involved qubit.
     for q in involved:
         q.reset(reset_type, simulate)
     align()
+
+    if reset_phase_of:
+        for element in reset_phase_of:
+            reset_frame(element)
+            reset_if_phase(element)
+        reset_global_phase()
+        align()
 
     # State prep: excite the swap pair's control qubit to |1> (resonant IF).
     ctrl.xy.play("x180")
@@ -96,7 +117,8 @@ def play_swap_round(involved, swap_pair, *, swap_operation: str, stark_operation
     # SHIFT, not a rotation). Hoisted outside the swap loop: the control's
     # xy frequency only matters for the stark play, and x180 (above) and
     # whatever follows the round run at the resonant IF.
-    ctrl.xy.update_frequency(stark_if)
+    if switch_if:
+        ctrl.xy.update_frequency(stark_if)
 
     # N swaps on the pair, each bare (fixed baked amplitude), each followed
     # SEQUENTIALLY by the off-resonant stark tone on the control xy. The swap
@@ -113,5 +135,6 @@ def play_swap_round(involved, swap_pair, *, swap_operation: str, stark_operation
         align()
 
     # Restore the resonant IF.
-    ctrl.xy.update_frequency(base_if)
+    if switch_if:
+        ctrl.xy.update_frequency(base_if)
     align()

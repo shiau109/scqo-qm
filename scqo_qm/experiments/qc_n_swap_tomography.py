@@ -2,11 +2,15 @@
 
 Circuit per shot (stark amplitude factor a, swap count N, basis b):
 
-  1-4. The round of qc_n_stark_amp, unchanged (``_pair_swap_round``): reset
-       every involved qubit, ``x180`` on the pair's CONTROL, detune its xy to the
-       stark IF, N x [bare swap macro, ``operation_gap_ns`` idle, stark tone at
-       ``amplitude_scale=a``], restore the resonant IF. ``update_frequency`` is
-       COHERENT (keep_phase=False), so the control's idle frame is intact here.
+  1-4. The round of qc_n_stark_amp (``_pair_swap_round``) in its COHERENCE
+       flavour: reset every involved qubit, re-reference both members' xy frames,
+       IF phases and the global phase (upconverters included), ``x180`` on the
+       pair's CONTROL, then N x [bare swap macro, ``operation_gap_ns`` idle, stark
+       tone at ``amplitude_scale=a``]. The stark operation carries its detuning IN
+       its waveform (``stark_detuned``, quam_config/register_stark_detuned.py), so
+       nothing switches a frequency: the per-shot phase reference and an
+       ``update_frequency`` round trip do not mix (SCQO BACKLOG I35). Physically
+       the same tone as qc_n_stark_amp's ``stark`` + ``update_frequency``.
   5.   Tomography pre-rotation on BOTH members at once, from the basis label
        (first character = the roster's HIGH member): ``z`` nothing, ``x``
        ``-y90``, ``y`` ``x90`` - the convention of qubit_tomography.
@@ -56,6 +60,20 @@ def _check_members(members) -> None:
                 f"and the readout calibration need {list(REQUIRED_XY)} on both pair members.")
 
 
+def _check_baked_detuning(ctrl, stark_operation: str, stark_detuning_hz: float) -> None:
+    """The stark operation must be off-resonant BY ITS OWN WAVEFORM, by exactly
+    ``stark_detuning_hz``: this round switches no frequency."""
+    op = ctrl.xy.operations.get(stark_operation)
+    detuning = getattr(op, "detuning", None)
+    if detuning is None or abs(float(detuning) - float(stark_detuning_hz)) > 1.0:
+        raise ValueError(
+            f"{ctrl.name}.xy {stark_operation!r} must carry its own detuning of "
+            f"{stark_detuning_hz:.0f} Hz in its waveform (found detuning={detuning!r}): the "
+            f"tomography round re-references the frames every shot and switches no frequency. "
+            f"Register it with quam_config/register_stark_detuned.py, or pass the "
+            f"stark_operation that carries it.")
+
+
 def build_program(
     machine,
     swap_pair,
@@ -94,6 +112,7 @@ def build_program(
     check_swap_round(swap_pair, swap_operation=swap_operation,
                      stark_operation=stark_operation, stark_amps=stark_amps)
     _check_members(measure)
+    _check_baked_detuning(swap_pair.qubit_control, stark_operation, stark_detuning_hz)
     for label in bases:
         if len(label) != 2 or any(c not in PRE_ROTATION for c in label):
             raise ValueError(f"basis label {label!r} is not two of {sorted(PRE_ROTATION)}")
@@ -141,11 +160,15 @@ def build_program(
             with for_(*from_array(q_a, stark_amps)):
                 with for_(*from_array(r, rounds_array)):
                     with for_(b, 0, b < len(bases), b + 1):
+                        # The coherence between the members' frames is read, so
+                        # they are re-referenced every shot and no frequency is
+                        # switched (the stark tone's detuning is in its waveform).
                         play_swap_round(
                             involved, swap_pair, swap_operation=swap_operation,
                             stark_operation=stark_operation, stark_amp=q_a, swap_count=r,
                             counter=rr, gap=gap, base_if=base_if, stark_if=stark_if,
-                            reset_type=reset_type, simulate=simulate)
+                            reset_type=reset_type, simulate=simulate, switch_if=False,
+                            reset_phase_of=[q.xy.name for q in measure])
                         with switch_(b):
                             for k, label in enumerate(bases):
                                 with case_(k):

@@ -20,7 +20,29 @@ STATE = str(Path(__file__).resolve().parents[1] / "quam_state")
 
 @pytest.fixture(scope="module")
 def machine():
-    return quam_config.Quam.load(STATE)
+    """The live tree plus ``stark_detuned`` (in memory - the repo state predates it)."""
+    from quam.components.pulses import GaussianPulse
+    from quam_config.register_stark_detuned import register_stark_detuned
+
+    m = quam_config.Quam.load(STATE)
+    # the repo state's `stark` is still the old square tone; 5Q4C's is this Gaussian
+    for q in m.qubits.values():
+        if q.xy is not None and "stark" in q.xy.operations:
+            q.xy.operations["stark"] = GaussianPulse(length=60, sigma=10, amplitude=0.3,
+                                                     axis_angle=0.0, subtracted=True)
+    register_stark_detuned(m, 50e6)
+    return m
+
+
+def test_a_square_stark_has_no_envelope_to_copy():
+    from quam.components.pulses import SquarePulse
+    from quam_config.register_stark_detuned import register_stark_detuned
+
+    m = quam_config.Quam.load(STATE)
+    q = next(q for q in m.qubits.values() if q.xy is not None)
+    q.xy.operations["stark"] = SquarePulse(length=60, amplitude=0.3, axis_angle=0.0)
+    with pytest.raises(ValueError, match="GaussianPulse"):
+        register_stark_detuned(m, 50e6)
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +78,7 @@ def _script(machine, qp, swap_op, *, calibration_shots=5, high_is_control=True):
 
     prog, layout = mod.build_program(
         machine, qp, high_is_control=high_is_control, swap_operation=swap_op,
-        stark_operation="stark", stark_detuning_hz=50e6, rounds_array=[0, 1, 2],
+        stark_operation="stark_detuned", stark_detuning_hz=50e6, rounds_array=[0, 1, 2],
         stark_amps=[0.4, 0.5], bases=mod.BASIS_LABELS, prepared_states=mod.PREPARED_STATES,
         num_shots=3, calibration_shots=calibration_shots, reset_type="thermal",
         operation_gap_ns=20)
@@ -69,11 +91,10 @@ def _pre_rotation_blocks(text: str) -> dict[int, list[tuple[str, str]]]:
     import re
 
     lines = text.splitlines()
-    detune = next(i for i, l in enumerate(lines) if "update_frequency(" in l)
-    restore = next(i for i in range(detune + 1, len(lines)) if "update_frequency(" in lines[i])
+    start = next(i for i, l in enumerate(lines) if 'play("stark_detuned"' in l)
     blocks: dict[int, list[tuple[str, str]]] = {}
     current = None
-    for line in lines[restore + 1:]:
+    for line in lines[start + 1:]:
         head = re.search(r"with (?:if_|elif_)\(\(v\d+==(\d+)\)\)", line)
         if head:
             current = int(head.group(1))
@@ -95,11 +116,11 @@ def test_program_plays_the_round_then_the_pre_rotations(machine, live_roster, hi
     text, layout = _script(machine, qp, swap_op, high_is_control=high_is_control)
     ctrl, tgt = qp.qubit_control.name, qp.qubit_target.name
     assert layout["qubits"] == [ctrl, tgt]
-    # the round (detune, swaps, restore) precedes the pre-rotations, then the readout
-    i_detune = text.index("update_frequency(")
-    i_restore = text.index("update_frequency(", i_detune + 1)
-    i_measure = text.index("measure(", i_restore)
-    assert i_detune < i_restore < i_measure
+    # the round (swaps with the baked-detuning stark tone) precedes the pre-rotations,
+    # then the readout - and no frequency is switched anywhere
+    assert "update_frequency(" not in text
+    i_stark = text.index('play("stark_detuned"')
+    assert i_stark < text.index("measure(", i_stark)
     # every basis plays exactly its two pre-rotations, first character = HIGH member
     high, low = (ctrl, tgt) if high_is_control else (tgt, ctrl)
     blocks = _pre_rotation_blocks(text)
@@ -113,6 +134,61 @@ def test_program_plays_the_round_then_the_pre_rotations(machine, live_roster, hi
     assert "state1" in text and "state2" in text
 
 
+def test_every_shot_re_references_both_frames(machine, live_roster):
+    """The coherence between the members' frames is read, so every shot resets
+    both IF phases and the global phase before the prep (BACKLOG I35)."""
+    _target, _side, swap_op, qp = _live_choice(machine, live_roster)
+    text, _layout = _script(machine, qp, swap_op, calibration_shots=0)
+    shot = text[:text.index('play("stark_detuned"')]
+    i_global = shot.rindex("reset_global_phase()")
+    for q in (qp.qubit_control, qp.qubit_target):
+        assert f'reset_if_phase("{q.xy.name}")' in shot[:i_global]
+    assert i_global < shot.rindex('play("x180"')
+
+
+def test_a_stark_without_baked_detuning_is_refused(machine, live_roster):
+    _target, _side, swap_op, qp = _live_choice(machine, live_roster)
+    with pytest.raises(ValueError, match="register_stark_detuned"):
+        mod.build_program(
+            machine, qp, high_is_control=True, swap_operation=swap_op, stark_operation="stark",
+            stark_detuning_hz=50e6, rounds_array=[0, 1, 2, 3], stark_amps=[0.5],
+            bases=mod.BASIS_LABELS, prepared_states=mod.PREPARED_STATES, num_shots=1,
+            calibration_shots=0, reset_type="thermal")
+    with pytest.raises(ValueError, match="detuning"):
+        mod.build_program(
+            machine, qp, high_is_control=True, swap_operation=swap_op,
+            stark_operation="stark_detuned", stark_detuning_hz=40e6, rounds_array=[0, 1, 2, 3],
+            stark_amps=[0.5], bases=mod.BASIS_LABELS, prepared_states=mod.PREPARED_STATES,
+            num_shots=1, calibration_shots=0, reset_type="thermal")
+
+
+def test_stark_detuned_is_the_stark_envelope_moved_up_by_the_detuning(machine):
+    """Same envelope, times exp(+i 2 pi 50 MHz t): the tone update_frequency(+50 MHz)
+    plays, without the switch."""
+    for q in machine.qubits.values():
+        if q.xy is None or "stark" not in q.xy.operations:
+            continue
+        plain = np.asarray(q.xy.operations["stark"].waveform_function(), dtype=complex)
+        moved = np.asarray(q.xy.operations["stark_detuned"].waveform_function(), dtype=complex)
+        t = np.arange(plain.size) * 1e-9
+        np.testing.assert_allclose(moved, plain * np.exp(2j * np.pi * 50e6 * t), atol=1e-12)
+
+
+def test_n_stark_amp_still_switches_and_never_resets(machine, live_roster):
+    """The populations flavour of the shared round is unchanged."""
+    from qm import generate_qua_script
+    from scqo_qm.experiments import qc_n_stark_amp
+
+    _target, _side, swap_op, qp = _live_choice(machine, live_roster)
+    prog, _ = qc_n_stark_amp.build_program(
+        machine, [qp.qubit_control, qp.qubit_target], qp, swap_operation=swap_op,
+        stark_operation="stark", stark_detuning_hz=50e6, rounds_array=[0, 1, 2],
+        stark_amps=[0.5], num_shots=2, reset_type="thermal", use_state_discrimination=True)
+    text = generate_qua_script(prog, machine.generate_config())
+    assert text.count("update_frequency(") == 2
+    assert "reset_if_phase" not in text and "reset_global_phase" not in text
+
+
 def test_no_calibration_block_without_shots(machine, live_roster):
     _target, _side, swap_op, qp = _live_choice(machine, live_roster)
     text, layout = _script(machine, qp, swap_op, calibration_shots=0)
@@ -121,7 +197,7 @@ def test_no_calibration_block_without_shots(machine, live_roster):
 
 def test_builder_refusals(machine, live_roster):
     _target, _side, swap_op, qp = _live_choice(machine, live_roster)
-    kw = dict(high_is_control=True, swap_operation=swap_op, stark_operation="stark",
+    kw = dict(high_is_control=True, swap_operation=swap_op, stark_operation="stark_detuned",
               stark_detuning_hz=50e6, rounds_array=[0, 1, 2, 3], stark_amps=[0.5],
               prepared_states=mod.PREPARED_STATES, num_shots=1, calibration_shots=0,
               reset_type="thermal")
