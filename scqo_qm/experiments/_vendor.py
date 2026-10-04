@@ -100,6 +100,37 @@ def vendor_qubit(experiment: Any, mode: str, *, field: str,
     return qubit
 
 
+def flux_line_element(experiment: Any, line: str, *, field: str,
+                      flux_point: str) -> tuple[Any, float]:
+    """The QUAM flux element behind a roster flux LINE, and the bias it stands at.
+
+    For probes that pulse a flux line scqo named in a PARAMETER (a crosstalk
+    ``source_line``): ``(element, idle_v)``, where ``element`` is a qubit's ``z``
+    or a pair's ``TunableCoupler`` - whichever the line carries - and ``idle_v`` is
+    the standing DC bias a pulse on it rides on. A qubit line stands at
+    ``flux_point`` (the point the probe applies through ``initialize_qpu``); a
+    coupler has no such choice and stands at the point it declares.
+
+    Resolved through the backend's LINE view, never by parsing the name. ``field``
+    is the Parameters field the name came from and appears in every refusal.
+    """
+    from ._flux_limits import declared_idle_offset_v, idle_offset_v
+
+    try:
+        view = experiment.backend.device.component(line)
+    except KeyError as err:
+        raise ValueError(
+            f"{field}={line!r}: no flux line of that name is realized by this "
+            f"backend ({err.args[0] if err.args else err})") from err
+    element = getattr(view, "vendor", None)
+    if element is None:
+        raise ValueError(
+            f"{field}={line!r}: its view serves no QUAM flux element to pulse")
+    if getattr(view, "qubit", None) is not None:
+        return element, idle_offset_v(element, flux_point)
+    return element, declared_idle_offset_v(element)
+
+
 def vendor_borrowed(experiment: Any, address: str) -> Any:
     """The QUAM element that REALIZES a borrowed drive channel, by its roster
     ADDRESS (``xy2.q1_q2_c``) - resolved by the backend's device model, which
