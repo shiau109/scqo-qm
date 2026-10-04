@@ -239,7 +239,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitXyzDelay
@@ -248,6 +248,17 @@ from scqo.experiments import QubitXyzDelay
 @register
 class QMQubitXyzDelay(QubitXyzDelay):
     """Build, run and fetch the multiplexed XY-Z delay scan on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_xyz_delay --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the x180 and the flux pulse are baked together, one waveform pair per "
+        "nanosecond of shift; the x180 has to be a sampled waveform, and a constant "
+        "pulse is refused",
+        "flux_delay_s is the delay of the flux line's output port in whole nanoseconds: "
+        "an accepted value is rounded to 1 ns, moves everything played on that port, and "
+        "is refused when negative",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it bakes a per-call config for the slid pulses "

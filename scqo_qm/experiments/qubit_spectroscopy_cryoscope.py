@@ -389,7 +389,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from scqo import register
@@ -399,6 +399,16 @@ from scqo.experiments import QubitSpectroscopyCryoscope
 @register
 class QMQubitSpectroscopyCryoscope(QubitSpectroscopyCryoscope):
     """Build the long-time cryoscope spectroscopy sweep on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_spectroscopy_cryoscope --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the spectroscopy pulse is an operation built on the drive line for this run "
+        "and removed afterwards; it is refused when louder than the loudest pulse "
+        "already stored on that line",
+        "the area of the x180 is read from its sampled envelope, so the amplitude "
+        "follows the shape the x180 really has",
+    )
 
     def run(self):
         """``super().run()`` in a ``try``, dropping the run-scoped drive op in the

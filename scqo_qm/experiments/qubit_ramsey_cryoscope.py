@@ -264,16 +264,33 @@ def acquire(
                     timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from scqo import register
 from scqo.experiments import QubitRamseyCryoscope
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitRamseyCryoscope(QubitRamseyCryoscope):
     """Build, run and fetch the ramsey cryoscope phase-tomography sequence on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitRamseyCryoscope.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_ramsey_cryoscope --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "both pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90",
+        "flux pulses up to 16 ns are baked waveforms; a longer one is the z line's const "
+        "operation stretched in steps of 4 ns, followed by a baked 1 to 3 ns remainder",
+        "the flux pulse starts 16 ns after the first x90 ends, and the second x90 starts "
+        "max_duration_ns + 16 ns after it, so the longest pulse ends as the second x90 "
+        "begins",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it bakes a per-call config for the phase "
