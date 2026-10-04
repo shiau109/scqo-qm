@@ -163,11 +163,14 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitParitySwitchContinuous
 from scqo.experiments._depletion import depletion_wait_ns
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 #: QUA plays waits on a 4 ns clock with a 16 ns (4-cycle) floor.
 _MIN_CYCLES = 4
@@ -181,6 +184,19 @@ def _cycles(ns: float) -> int:
 @register
 class QMQubitParitySwitchContinuous(QubitParitySwitchContinuous):
     """Build a per-shot parity-monitor QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitParitySwitchContinuous.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_parity_switch_continuous --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the pi/2 pulses are the y90 and x90 operations, whose amplitude is pi_amp_x90",
+        "targets are measured one after another, each at its own shot period",
+        "with use_state_discrimination a shot is |1> when its I is above readout_threshold",
+        "the reported shot period sums the played durations and leaves out the "
+        "sequencer's alignment overhead, some tens of ns per shot",
+    )
 
     def probe(self) -> Any:
         from scqo_qm.experiments._lib import select_qubits

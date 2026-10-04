@@ -189,7 +189,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any  # noqa: E402
+from typing import Any, ClassVar  # noqa: E402
 
 from scqo import register  # noqa: E402
 from scqo.experiments import QubitResonatorStark  # noqa: E402
@@ -202,6 +202,18 @@ class QMQubitResonatorStark(QubitResonatorStark):
     """Build the Stark-tone spectroscopy QUA program on the QM OPX, one target at
     a time. Subclasses the CORE class, not ``QMQubitSpectroscopy``: that shell opts
     into active reset, and a subclass would inherit the opt-in silently."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_resonator_stark --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the Stark tone is the readout operation, stretched and scaled, so amp_prefactor "
+        "has to stay below 2",
+        "the drive line and the resonator have to run on different cores: on one core the "
+        "tone finishes before the drive starts and the map shows no shift at all; check the "
+        "simulated traces of --preview on a new wiring",
+        "a readout_depletion_s still at the 16 ns factory value is refused as never "
+        "calibrated, unless readout_depletion_ns is given",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method, reset_max_attempts

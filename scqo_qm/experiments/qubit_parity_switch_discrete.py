@@ -169,11 +169,14 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitParitySwitchDiscrete
 from scqo.experiments._depletion import depletion_wait_ns
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 from .qubit_parity_switch_continuous import _cycles
 
@@ -189,6 +192,20 @@ _PERIOD_TOO_SHORT = (
 class QMQubitParitySwitchDiscrete(QubitParitySwitchDiscrete):
     """Build a two-measurement-per-cycle parity-monitor QUA program on the QM
     OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitParitySwitchDiscrete.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_parity_switch_discrete --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the pi/2 pulses are the x90 and y90 operations, whose amplitude is pi_amp_x90",
+        "targets are measured one after another, each at its own cycle period",
+        "with use_state_discrimination a measurement is |1> when its I is above "
+        "readout_threshold",
+        "the pad that fills the cycle is on the 4 ns grid, and one shorter than 16 ns is "
+        "raised to 16 ns; the reported cycle period includes it",
+    )
 
     def probe(self) -> Any:
         from scqo_qm.experiments._lib import select_qubits

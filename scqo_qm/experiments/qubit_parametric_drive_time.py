@@ -189,7 +189,7 @@ def build_program(
 
 
 from functools import partial
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -205,6 +205,17 @@ class QMQubitParametricDriveTime(FluxOscillatorPreviewMixin, QubitParametricDriv
     heterogeneous streams (the fetch is the shared one) but to bind the
     oscillator-patched config into the acquire callable (``_parametric.py``).
     ``patch_preview_config`` is inherited from FluxOscillatorPreviewMixin."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_parametric_drive_time --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the tone is the z line's const operation, played on an oscillator this probe "
+        "adds to the generated configuration for the run; the stored state is unchanged",
+        "a 200 ns wait separates the x180 from the tone",
+        "the tone's length is played in whole 4 ns clock cycles, the grid the time axis is on",
+        "an amplitude that, on top of the idle bias, takes the flux output beyond its "
+        "range is refused",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

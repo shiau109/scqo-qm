@@ -177,12 +177,15 @@ def build_program(
     return prog, sweep_axes
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
 from scqo import register
 from scqo.experiments import QubitStarkPhaseEcho
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 def _baked_stark_amps(qubits, stark_operation: str) -> dict[str, float]:
@@ -212,6 +215,21 @@ def _baked_stark_amps(qubits, stark_operation: str) -> dict[str, float]:
 @register
 class QMQubitStarkPhaseEcho(QubitStarkPhaseEcho):
     """Build a multiplexed AC-Stark phase echo QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitStarkPhaseEcho.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_stark_phase_echo --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the pi/2 pulses are the y90 and x90 operations, whose amplitude is pi_amp_x90; "
+        "-y90 is y90 played with its amplitude negated",
+        "the stark operation is played at its stored length and never stretched; to "
+        "change the length, register it again",
+        "the tone is detuned by moving the drive's intermediate frequency, which is put "
+        "back before the closing pulse",
+        "max_stark_amp has to stay below 2",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method, reset_max_attempts
