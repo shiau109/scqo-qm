@@ -221,15 +221,29 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitSQRB
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitSQRB(QubitSQRB):
     """Build a multiplexed SQRB QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (*QubitSQRB.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_sqrb --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the random sequences are drawn on the instrument; with seed unset the generator "
+        "is seeded with 42",
+        "the identity Clifford is an idle as long as a pi pulse, so a Clifford averages "
+        "1.875 pulse lengths, the number the analysis divides by",
+        "the pi/2 pulses are operations of their own, whose amplitude is pi_amp_x90",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

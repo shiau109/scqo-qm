@@ -484,15 +484,31 @@ def acquire(
     return ds
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitTomography
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitTomography(QubitTomography):
     """Build a multiplexed qubit tomography QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitTomography.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_tomography --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the state preparation and the basis rotation are the x90 / y90 / -x90 / -y90 "
+        "operations, whose amplitude is pi_amp_x90",
+        "under the noise-off condition a spectator idles for gate_count times its gate "
+        "length; a gate shorter than 16 ns gives a wait below the 4-cycle minimum at "
+        "gate count 1",
+        "the basis coordinate is stored in the order z, x, y",
+    )
 
     def preview_program(self) -> Any:
         """The ``--preview`` build: omits training shots and skips thermal wait."""

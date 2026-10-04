@@ -148,15 +148,33 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitDragEquator
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitDragEquator(QubitDragEquator):
     """Build a multiplexed DRAG equator QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitDragEquator.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_drag_equator --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "each coefficient is realized by baking a reference coefficient (the largest "
+        "|beta| of the window) into the benchmarked gate for the run and scaling its DRAG "
+        "quadrature; the stored value is restored afterwards",
+        "only the benchmarked gate's family gets that reference: with target_gate=x180 "
+        "the closing pi/2 pulse scales its own stored drag_beta_x90 by the same factor, "
+        "so its DRAG term is not the swept beta (and the other way round for x90)",
+        "the pi/2 pulses are the x90 and y90 operations, whose amplitude is pi_amp_x90",
+        "--preview is refused: the probe builds its own configuration and fetches itself",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it generates a reference-alpha config and "

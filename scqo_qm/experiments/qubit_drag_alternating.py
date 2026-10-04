@@ -127,15 +127,40 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitDragAlternating
+from scqo.requirements import Requirement
 
 
 @register
 class QMQubitDragAlternating(QubitDragAlternating):
     """Build a multiplexed DRAG alternating QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements: the
+    #: sweep scales the STORED pulse, so the stored coefficient is an input here
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitDragAlternating.requires,
+        Requirement("drag_beta",
+                    "the swept coefficient is the stored pulse's DRAG quadrature, "
+                    "rescaled: a stored zero leaves nothing to scale",
+                    when=("target_gate", "x180")),
+        Requirement("drag_beta_x90",
+                    "the swept coefficient is the stored pulse's DRAG quadrature, "
+                    "rescaled: a stored zero leaves nothing to scale",
+                    when=("target_gate", "x90")),
+    )
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_drag_alternating --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "each coefficient is realized by scaling the DRAG quadrature of the stored pulse "
+        "by beta / stored coefficient: with a stored coefficient of zero that quadrature "
+        "is zero and the sweep changes nothing",
+        "the scale is computed from the FIRST target's stored coefficient and applied to "
+        "every target: with several targets the beta axis is exact for the first only",
+        "--preview is refused: the probe executes and fetches itself",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = "it executes and fetches inside probe()"
