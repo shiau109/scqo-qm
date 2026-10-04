@@ -190,6 +190,20 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
     range can span multiple hardware bands (e.g. Band 1 + Band 2).
     """
 
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run broadband_qubit_spectroscopy --help`
+    backend_notes = (
+        "a scan that crosses an MW-FEM band switches the output band, which a port pair "
+        "shares: the pair partner is parked for the run and restored afterwards, so "
+        "scanning one qubit takes its partner with it",
+        "on an Octave the local oscillator moves on a 250 MHz grid and two RF outputs may "
+        "share a synthesizer: the partner is re-parked and restored the same way",
+        "the local oscillator sits below each sub-band, not at its centre, and a sub-band "
+        "is capped at the IF range the upconverter allows: the measured frequencies are "
+        "not the declared grid",
+        "--preview is refused: the probe acquires band by band itself",
+    )
+
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = "broadband qubit spectroscopy steps drive LO frequencies across sub-bands"
 

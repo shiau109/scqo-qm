@@ -129,11 +129,23 @@ import numpy as np
 
 from scqo import register
 from scqo.experiments import QubitEcho
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitEcho(QubitEcho):
     """Build a multiplexed Hahn-echo QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (*QubitEcho.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_echo --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the two pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90",
+        "each arm is rounded to the 4 ns clock, so the total idle moves in 8 ns steps, and "
+        "the dataset stores the realized times",
+    )
 
     #: Readout is held at the calibrated point for the whole run and the reset is
     #: a genuine state reset, so reset_method='active' is valid here (_reset.py).

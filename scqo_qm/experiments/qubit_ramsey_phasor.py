@@ -140,11 +140,24 @@ from typing import Any, ClassVar
 import numpy as np
 from scqo import register
 from scqo.experiments import QubitRamseyPhasor
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitRamseyPhasor(QubitRamseyPhasor):
     """Build a multiplexed phasor-Ramsey QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitRamseyPhasor.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_ramsey_phasor --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "both pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90",
+        "the frame axis is a frame rotation applied before the second pulse and reset "
+        "after it",
+    )
 
     #: Readout is held at the calibrated point for the whole run and the reset is
     #: a genuine state reset, so reset_method='active' is valid here (_reset.py).

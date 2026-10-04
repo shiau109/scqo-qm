@@ -153,7 +153,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -164,6 +164,13 @@ from scqo.experiments import QubitRelaxationFluxPulse
 @register
 class QMQubitRelaxationFluxPulse(QubitRelaxationFluxPulse):
     """Build a multiplexed T1 vs flux-PULSE QUA program on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_relaxation_flux_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "prepare_state is not realized: the x180 is played whatever its value "
+        "(SCQO BACKLOG I19)",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

@@ -154,17 +154,32 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
 from scqo import register
 from scqo.experiments import QubitEchoFluxPulse
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitEchoFluxPulse(QubitEchoFluxPulse):
     """Build a multiplexed T2 Echo vs flux-PULSE QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitEchoFluxPulse.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_echo_flux_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the two pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90",
+        "the stored wait_time_ns is the length of ONE arm, half of the total idle the "
+        "experiment declares, so the fitted T2 echo comes out at half its value "
+        "(SCQO BACKLOG I38)",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

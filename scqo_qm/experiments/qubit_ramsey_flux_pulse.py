@@ -171,11 +171,25 @@ from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitRamseyFluxPulse
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQubitRamseyFluxPulse(QubitRamseyFluxPulse):
     """Build a multiplexed Ramsey-vs-flux-pulse QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitRamseyFluxPulse.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_ramsey_flux_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the two pi/2 pulses are the y90 and x90 operations, whose amplitude is pi_amp_x90",
+        "the flux pulse is the z line's const operation scaled to the requested excursion",
+        "the virtual detuning is a frame rotation applied before the second pulse",
+    )
 
     #: the same opt-in as qubit_ramsey: readout at the calibrated point, a genuine
     #: state reset, and the Ramsey is the sensitive test of the settle (_reset.py)

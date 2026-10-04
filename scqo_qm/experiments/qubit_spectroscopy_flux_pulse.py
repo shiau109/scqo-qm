@@ -200,7 +200,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitSpectroscopyFluxPulse
@@ -209,6 +209,15 @@ from scqo.experiments import QubitSpectroscopyFluxPulse
 @register
 class QMQubitSpectroscopyFluxPulse(QubitSpectroscopyFluxPulse):
     """Build a multiplexed 2D (pulsed-flux x detuning) spectroscopy QUA program on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_spectroscopy_flux_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the saturation tone and the flux pulse take their length from the stored saturation "
+        "operation: no parameter of this experiment sets it (and they are currently played "
+        "four times that long, SCQO BACKLOG I20)",
+        "the wait before each point is QUAM's thermal reset of the qubit",
+    )
 
     def probe(self) -> Any:
         from scqo_qm.experiments._lib import select_qubits
