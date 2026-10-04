@@ -155,7 +155,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import PairCouplerCrossingPulse
@@ -180,6 +180,17 @@ def _missing_thresholds(experiment: Any, members: Sequence[str]) -> list[str]:
 @register
 class QMPairCouplerCrossingPulse(JointPopulationMixin, PairCouplerCrossingPulse):
     """Build the coupler-crossing scan on the QM OPX (one QCQ pair)."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_coupler_crossing_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the coupler pulse is the coupler's const operation scaled to the swept volts, "
+        "as long as both buffers and the x180; a window that, on top of the standing "
+        "bias, leaves the port's range is refused",
+        "a member with no readout_threshold is refused by name before the program is "
+        "built",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

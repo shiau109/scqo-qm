@@ -218,17 +218,36 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import xarray as xr
 from scqo import register
 from scqo.experiments import PairZZCoupler
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMPairZZCoupler(PairZZCoupler):
     """Build the multiplexed ZZ-vs-coupler QUA program on the QM OPX (QCQ pairs)."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *PairZZCoupler.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_zz_coupler --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90; the "
+        "detuning is a frame rotation of the measured member before its last x90",
+        "the coupler bias is the coupler's const operation scaled to the swept volts, "
+        "played on top of the coupler's standing bias; the proposed idle_flux does not "
+        "include that bias",
+        "idle_time_ns is rounded to the 4 ns grid, 16 ns at least, and equal values are "
+        "merged: the axis can be shorter than num_time_points",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     def _measure_side(self, machine: Any) -> str:
         """Map the neutral ``measure`` role (high/low) onto vendor control/target.

@@ -500,7 +500,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import xarray as xr
@@ -513,6 +513,21 @@ from ._pair_roles import JointPopulationMixin
 @register
 class QMPairSwapChevron(JointPopulationMixin, PairSwapChevron):
     """Build, run and fetch the multiplexed swap chevron on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_swap_chevron --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the member's pulse is its z line's const operation scaled to the swept volts; "
+        "an amplitude that, on top of the standing bias, leaves the port's range is "
+        "refused",
+        "without coupler_flux_v, durations up to 16 ns are baked 1 ns segments and longer "
+        "ones a stretched pulse plus a baked tail; the probe runs against its own baked "
+        "configuration, so --preview is refused",
+        "with coupler_flux_v, the coupler pulse of swap_operation has to be a square pulse "
+        "with a non-zero stored amplitude: the volts are divided by it, and a shaped pulse "
+        "would be zero-padded instead of stretched",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it bakes a per-call config for the sub-17 ns "

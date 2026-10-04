@@ -338,7 +338,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log, config=config)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import xarray as xr
 from scqo import register
@@ -360,6 +360,19 @@ _MIN_FLUX_NS = 16
 @register
 class QMPairSwapFluxMap(JointPopulationMixin, PairSwapFluxMap):
     """Build the multiplexed fixed-time 2D swap map on the QM OPX (QCQ pairs)."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_swap_flux_map --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "both pulses are the const operation of their line, scaled to the swept volts; "
+        "flux_pulse_shape=flattop_cosine plays the operation of that name, which has to "
+        "be registered on the coupler and on the member's z line",
+        "swap_time_ns is rounded to the 4 ns grid, 16 ns at least; the result reports the "
+        "value that was played",
+        "an amplitude that, on top of its line's standing bias, leaves the port's range "
+        "is refused, as is one of twice the operation's stored amplitude or more",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method

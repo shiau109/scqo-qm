@@ -275,7 +275,7 @@ def acquire(
                     timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import PairSwapAngle, states_to_joint_population
@@ -299,6 +299,22 @@ def _member_states(state: xr.DataArray, high_side: str) -> xr.DataArray:
 @register
 class QMPairSwapAngle(PairSwapAngle):
     """Build, run and fetch the partial-swap angle calibration on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_swap_angle --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "drive_side and flux_side both have to name the pair's control member: the swap "
+        "operation plays its member pulse on the control's z line only",
+        "the swept volts are divided by the stored amplitude of the operation's coupler "
+        "pulse, so a coupler pulse stored at zero is refused by name",
+        "operation_gap_ns has to be a multiple of 4 ns",
+        "a compensation tone is played by moving the member's intermediate frequency by "
+        "stark_detuning_hz for the swaps and back before the readout; a factor of 2 or "
+        "more is refused",
+        "one program per pair, one after another, run inside probe(); --preview builds "
+        "the program of a single pair",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it executes one program per swap pair in a "

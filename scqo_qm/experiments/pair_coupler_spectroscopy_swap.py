@@ -31,7 +31,7 @@ built.
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Sequence
+from typing import Any, ClassVar, Sequence
 
 import numpy as np
 import xarray as xr
@@ -194,6 +194,20 @@ from ._pair_roles import JointPopulationMixin
 @register
 class QMPairCouplerSpectroscopySwap(JointPopulationMixin, PairCouplerSpectroscopySwap):
     """Build the coupler swap spectroscopy on the QM OPX (one QCQ pair, MW-FEM)."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_coupler_spectroscopy_swap --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the tone member's port gets its own local oscillator at the window centre for the "
+        "run, with the MW-FEM band switched together with its port-pair partner when "
+        "needed; the stored state is restored straight after the configuration is built",
+        "the ramp is a waveform of 1 ns samples added to the generated configuration for "
+        "the run; a ramp that, on top of the standing bias, reaches the port's range is "
+        "refused",
+        "the tone frequencies are intermediate frequencies around that local oscillator; "
+        "tone_len_ns and the buffer are on the 4 ns grid, 16 ns at least",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     def _build(self) -> tuple[Any, dict, dict]:
         from ._reset import check_reset_method

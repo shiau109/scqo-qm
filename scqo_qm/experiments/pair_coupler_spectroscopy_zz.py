@@ -32,7 +32,7 @@ off its frequency and the whole scan would read as ``no_line``.
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Sequence
+from typing import Any, ClassVar, Sequence
 
 import numpy as np
 import xarray as xr
@@ -154,6 +154,20 @@ from ._pair_roles import JointPopulationMixin
 @register
 class QMPairCouplerSpectroscopyZZ(JointPopulationMixin, PairCouplerSpectroscopyZZ):
     """Build the coupler ZZ spectroscopy on the QM OPX (one QCQ pair, MW-FEM)."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run pair_coupler_spectroscopy_zz --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the tone member's port gets its own local oscillator at the window centre for the "
+        "run, with the MW-FEM band switched together with its port-pair partner when "
+        "needed; the stored state is restored straight after the configuration is built",
+        "the selective pi is the pi member's saturation operation, scaled down and "
+        "stretched to selective_pi_len_ns; the scale comes from the area of its stored "
+        "x180",
+        "a pi member whose port the band switch would park at the band floor is refused "
+        "by name: its pi would play off its frequency",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     def _build(self) -> tuple[Any, dict, dict]:
         from ._reset import check_reset_method
