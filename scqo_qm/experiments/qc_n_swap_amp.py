@@ -263,7 +263,7 @@ def acquire(
     return _acquire(machine, prog, sweep_axes, num_shots=num_shots, timeout=timeout, log=log)
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import xarray as xr
@@ -289,6 +289,20 @@ def _member_states(state: xr.DataArray, high_side: str) -> xr.DataArray:
 @register
 class QMQcNSwapAmp(QcNSwapAmp):
     """Build, run and fetch the N-swap amplitude map on the QM OPX."""
+
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qc_n_swap_amp --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "drive_side and flux_side both have to name the pair's control member: the swap "
+        "operation plays its member pulse on the control's z line only",
+        "the swept volts are divided by the stored amplitude of the operation's member "
+        "pulse, which must not be zero; an amplitude that, on top of the standing bias, "
+        "leaves the port's range is refused",
+        "operation_gap_ns has to be a multiple of 4 ns; the gap follows the swap",
+        "one program per pair, one after another, run inside probe(); --preview builds "
+        "the program of a single pair; every shot is fetched, in both readout modes",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it executes one program per swap pair in a "

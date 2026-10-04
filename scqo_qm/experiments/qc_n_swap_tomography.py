@@ -29,7 +29,7 @@ self-acquires: one program per target pair in a Python loop inside ``probe()``.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 import numpy as np
 import xarray as xr
@@ -245,11 +245,36 @@ def calibration_population(cal_high: np.ndarray, cal_low: np.ndarray,
 from scqo import register
 from scqo.experiments import QcNSwapTomography, states_to_joint_population
 from scqo.experiments.qc_n_swap_tomography import BASIS_LABELS, PREPARED_STATES
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
 class QMQcNSwapTomography(QcNSwapTomography):
     """Build, run and fetch the repeated-swap tomography on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QcNSwapTomography.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qc_n_swap_tomography --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the rotations are the -y90 and x90 operations, whose amplitude is pi_amp_x90; "
+        "both members need x180, x90 and -y90",
+        "drive_side and flux_side both have to name the pair's control member: the swap "
+        "operation plays its member pulse on the control's z line only",
+        "both members' drive frames, their intermediate-frequency phases and the global "
+        "phase are reset at the start of every shot, and no frequency is switched: the "
+        "stark operation has to carry stark_detuning_hz in its waveform "
+        "(quam_config/register_stark_detuned.py makes it) and is refused otherwise",
+        "a round lasts the swap, the gap and the tone plus about 8 ns of program overhead "
+        "(measured on the gateway simulator); operation_gap_ns has to be a multiple of 4 ns",
+        "the readout calibration block runs once, before the sweep",
+        "one program per pair, one after another, run inside probe(); --preview builds "
+        "the program of a single pair; every shot is fetched, in both readout modes",
+        "reset_method=active is refused: this probe has not opted in",
+    )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse
     probe_self_acquires = ("it executes one program per swap pair in a "
