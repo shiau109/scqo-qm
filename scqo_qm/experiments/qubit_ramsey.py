@@ -145,11 +145,26 @@ from typing import Any, ClassVar
 import numpy as np
 from scqo import register
 from scqo.experiments import QubitRamsey
+from scqo.requirements import Requirement
 
 
 @register
 class QMQubitRamsey(QubitRamsey):
     """Build a multiplexed Ramsey QUA program on the QM OPX."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitRamsey.requires,
+        Requirement("pi_amp_x90", "the amplitude of the y90 and x90 operations this probe plays"),
+    )
+    #: true of THIS probe only; scqo shows them in `scqo run qubit_ramsey --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the idle axis is realized on the 4 ns clock: each point is rounded to a clock cycle and "
+        "duplicates are removed, so a step finer than 4 ns returns fewer points than num_points, "
+        "and the dataset stores the realized times",
+        "the two pi/2 pulses are the y90 and x90 operations, whose amplitude is pi_amp_x90",
+        "the virtual detuning is a frame rotation applied before the second pulse",
+    )
 
     #: Readout is held at the calibrated point for the whole run and the reset is
     #: a genuine state reset, so reset_method='active' is valid here (_reset.py).

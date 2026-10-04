@@ -214,6 +214,12 @@ scripts/                 # check_real_config.py, migrate_state_scqo_qm.py (the p
    `qualibration_libs` (neither is a dependency any more), never scqat.
 5. Census literals that react to a new experiment: `tests/test_preview.py` `SELF_ACQUIRING`
    (probe_self_acquires shells), `tests/test_reset_method.py` `CARRIERS` (active-reset opt-in).
+6. What is true of THIS backend only is declared on the class, not written into scqo's
+   documents: `backend_notes` (short sentences; `scqo run <name> --help` shows them here) and,
+   where the probe consumes a knob the other backend does not, `requires` extended from the
+   core class's (`qubit_ramsey.py` is the worked example: the 4 ns grid, `pi_amp_x90`). The
+   pulse ORDER is declared once, in scqo's `sequence_diagram` — change the order here and that
+   changes in the same piece of work (SCQO `CLAUDE.md`, *Experiment documents*).
 
 ## Physics + backend invariants (verified against the working tree)
 
