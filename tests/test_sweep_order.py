@@ -1,6 +1,6 @@
 """A descending window reaches the QOP as a descending sweep.
 
-scqo's flux, detuning and amplitude windows are a TRAVERSAL ORDER (decided
+scqo's flux, source-flux, detuning and amplitude windows are a TRAVERSAL ORDER (decided
 2026-09-26): ``start`` -> ``end`` in either direction, never re-sorted. The QM probes
 hand the axis to QUA verbatim — ``for_(*from_array(v, axis))``, which branches on
 the step sign (``v >= stop``, ``v + -step``), or ``for_each_(v, axis)``, which
@@ -36,8 +36,10 @@ from scqo.experiments._capabilities import (  # noqa: E402
     AMP_AXIS,
     DETUNING_AXIS,
     FLUX_AXIS,
+    SOURCE_FLUX_AXIS,
     AmplitudeSweepParameters,
     DriveDetuningSweepParameters,
+    FluxSourcePulseSweepParameters,
     FluxSweepParameters,
     ReadoutDetuningSweepParameters,
 )
@@ -54,6 +56,8 @@ WINDOWS = {
     ReadoutDetuningSweepParameters: (
         "start_readout_detuning_hz", "end_readout_detuning_hz", DETUNING_AXIS),
     AmplitudeSweepParameters: ("start_amp_factor", "end_amp_factor", AMP_AXIS),
+    FluxSourcePulseSweepParameters: (
+        "start_source_flux_v", "end_source_flux_v", SOURCE_FLUX_AXIS),
 }
 
 #: keep every program small; each carrier takes only the fields it declares
@@ -61,7 +65,9 @@ SMALL = {"num_averages": 10, "num_shots": 100, "num_amp_points": 5,
          "num_flux_points": 5, "num_drive_freq_points": 5,
          "num_readout_freq_points": 5, "num_power_points": 3,
          "num_wait_points": 5, "max_wait_ns": 400, "num_idle_points": 5,
-         "max_repetitions": 4}
+         "max_repetitions": 4,
+         # the crosstalk map has no default source line; q1's z line stands in
+         "source_line": "z_q1", "num_source_flux_points": 3}
 
 QM_PROBES = sorted(e["name"] for e in catalog()
                    if get(e["name"]).__module__.startswith("scqo_qm."))
