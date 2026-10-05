@@ -178,7 +178,7 @@ class QMQubitEchoFluxPulse(QubitEchoFluxPulse):
         "the two pi/2 pulses are the x90 operation, whose amplitude is pi_amp_x90",
         "the stored wait_time_ns is the length of ONE arm, half of the total idle the "
         "experiment declares, so the fitted T2 echo comes out at half its value "
-        "(SCQO BACKLOG I38)",
+        "(SCQO BACKLOG I39)",
     )
 
     def probe(self) -> Any:

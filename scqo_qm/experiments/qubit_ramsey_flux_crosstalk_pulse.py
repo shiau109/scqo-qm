@@ -225,10 +225,13 @@ def build_program(
     return prog, sweep_axes
 
 
-from typing import Any
+from typing import Any, ClassVar
 
 from scqo import register
 from scqo.experiments import QubitRamseyFluxCrosstalkPulse
+from scqo.requirements import Requirement
+
+from ._requires import X90_AMPLITUDE
 
 
 @register
@@ -237,6 +240,22 @@ class QMQubitRamseyFluxCrosstalkPulse(QubitRamseyFluxCrosstalkPulse):
 
     Thermal reset only: the active-reset opt-in is a hardware-gated decision per
     sequence (``_reset.py``), and this one has not been validated with it."""
+
+    #: what only this backend consumes, on top of the neutral requirements
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *QubitRamseyFluxCrosstalkPulse.requires, X90_AMPLITUDE)
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qubit_ramsey_flux_crosstalk_pulse --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the two pi/2 pulses are the y90 and x90 operations, whose amplitude is pi_amp_x90",
+        "both flux pulses are the const operation of their line, scaled to the requested "
+        "excursion; an amplitude that, on top of that line's standing bias, leaves the "
+        "port's range is refused",
+        "the virtual detuning is a frame rotation applied before the second pulse",
+        "with a source lead the source line keeps its own clock from the reset to the "
+        "end of the pulses, and both sides carry a common 16 ns wait",
+        "idle times are played in 4 ns steps, 16 ns at least",
+    )
 
     def probe(self) -> Any:
         from ._reset import check_reset_method, reset_max_attempts
