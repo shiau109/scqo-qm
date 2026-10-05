@@ -526,7 +526,6 @@ class QMPairSwapChevron(JointPopulationMixin, PairSwapChevron):
         "with coupler_flux_v, the coupler pulse of swap_operation has to be a square pulse "
         "with a non-zero stored amplitude: the volts are divided by it, and a shaped pulse "
         "would be zero-padded instead of stretched",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse

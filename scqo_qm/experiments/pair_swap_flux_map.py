@@ -371,7 +371,6 @@ class QMPairSwapFluxMap(JointPopulationMixin, PairSwapFluxMap):
         "value that was played",
         "an amplitude that, on top of its line's standing bias, leaves the port's range "
         "is refused, as is one of twice the operation's stored amplitude or more",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     def probe(self) -> Any:

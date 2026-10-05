@@ -360,6 +360,28 @@ from scqo_qm.experiments.qc_unidirectional_trotter import _vendor_operation
 class QMQcTrotterCompensation(QcTrotterCompensation):
     """Build, run and fetch the Trotter-chain compensation scan on the QM OPX."""
 
+    #: true of THIS probe only; scqo shows them in
+    #: `scqo run qc_trotter_compensation --help`
+    backend_notes: ClassVar[tuple[str, ...]] = (
+        "the swaps, the relay's reset and the stark tone are operations stored in the "
+        "QUAM tree and played as stored; a missing one is refused by name, with the "
+        "quam_config script that registers it",
+        "every operation of a round is followed by a global align, so the round is "
+        "strictly sequential; the stark tones of one round play together",
+        "the stark tones are made off-resonant by moving each toned qubit's intermediate "
+        "frequency by stark_detuning_hz for the rounds and back before the readout; a "
+        "factor of 2 or more is refused",
+        "a round lasts its operations and gaps plus about 20 ns of program overhead "
+        "(measured on the gateway simulator); operation_gap_ns has to be a multiple of 4 ns",
+        "an idle step waits the longer of the control's and the coupler's copy of "
+        "idle_reference_operation's pulse",
+        "swap_coupler_flux is divided by the stored amplitude of the operation's coupler "
+        "pulse, so a coupler pulse stored at zero is refused by name",
+        "with reset_method=active every qubit a shot resets needs its discriminator, "
+        "also one that is not a target",
+        "readout_mode=average averages on the instrument; shot keeps every shot",
+    )
+
     #: Active reset is valid here for the same reason as in
     #: qc_unidirectional_trotter, whose parameter file this scan shares: a fixed
     #: readout condition, and a genuine between-shots state reset. The relay's

@@ -301,7 +301,6 @@ class QMQcNSwapAmp(QcNSwapAmp):
         "operation_gap_ns has to be a multiple of 4 ns; the gap follows the swap",
         "one program per pair, one after another, run inside probe(); --preview builds "
         "the program of a single pair; every shot is fetched, in both readout modes",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse

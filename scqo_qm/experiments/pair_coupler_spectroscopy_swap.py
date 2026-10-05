@@ -206,7 +206,6 @@ class QMPairCouplerSpectroscopySwap(JointPopulationMixin, PairCouplerSpectroscop
         "refused",
         "the tone frequencies are intermediate frequencies around that local oscillator; "
         "tone_len_ns and the buffer are on the 4 ns grid, 16 ns at least",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     def _build(self) -> tuple[Any, dict, dict]:

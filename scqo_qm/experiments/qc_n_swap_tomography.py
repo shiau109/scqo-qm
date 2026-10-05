@@ -273,7 +273,6 @@ class QMQcNSwapTomography(QcNSwapTomography):
         "the readout calibration block runs once, before the sweep",
         "one program per pair, one after another, run inside probe(); --preview builds "
         "the program of a single pair; every shot is fetched, in both readout modes",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     # preview opt-out (backend.SELF_ACQUIRING_ATTR): truthy reason = refuse

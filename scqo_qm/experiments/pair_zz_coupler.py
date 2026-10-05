@@ -246,7 +246,6 @@ class QMPairZZCoupler(PairZZCoupler):
         "include that bias",
         "idle_time_ns is rounded to the 4 ns grid, 16 ns at least, and equal values are "
         "merged: the axis can be shorter than num_time_points",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     def _measure_side(self, machine: Any) -> str:

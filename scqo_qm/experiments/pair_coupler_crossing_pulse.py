@@ -189,7 +189,6 @@ class QMPairCouplerCrossingPulse(JointPopulationMixin, PairCouplerCrossingPulse)
         "bias, leaves the port's range is refused",
         "a member with no readout_threshold is refused by name before the program is "
         "built",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     def probe(self) -> Any:

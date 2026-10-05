@@ -166,7 +166,6 @@ class QMPairCouplerSpectroscopyZZ(JointPopulationMixin, PairCouplerSpectroscopyZ
         "x180",
         "a pi member whose port the band switch would park at the band floor is refused "
         "by name: its pi would play off its frequency",
-        "reset_method=active is refused: this probe has not opted in",
     )
 
     def _build(self) -> tuple[Any, dict, dict]:
