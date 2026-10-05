@@ -125,6 +125,26 @@ def test_only_the_named_shells_opt_in():
     assert opted == CARRIERS
 
 
+def test_the_requirement_listing_follows_the_opt_in():
+    """`scqo run <name> --help` lists what a reset needs from scqo's declared
+    requirements, and the shared Parameters accept ``reset_method="active"`` on
+    every backend. ``experiments/__init__.py`` tells scqo that active reset is
+    opt-in here, so a shell that refuses it does not list the discriminator and
+    the settle it would never read, while a carrier still does."""
+    from scqo.experiments import get
+
+    def conditions(name):
+        return {req.condition() for req in get(name).requirements()}
+
+    denied = [n for n in _qm_reset_shells() if n not in CARRIERS]
+    assert {"qubit_sqrb", "qubit_ramsey_flux_crosstalk_pulse"} <= set(denied)
+    listing = [n for n in denied if "reset_method=active" in conditions(n)]
+    assert not listing, f"thermal-only shells still list active-reset needs: {listing}"
+    assert "reset_method=thermal" in conditions("qubit_sqrb")
+    for name in ("qubit_relaxation", "qubit_ramsey"):
+        assert "reset_method=active" in conditions(name), name
+
+
 def test_every_qm_reset_shell_resolves_through_the_helper():
     """The invariant that would have caught the original leak (shells carrying
     ``reset_method`` but hardcoding thermal in their probe): every QM shell with
