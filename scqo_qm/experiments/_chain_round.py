@@ -1,5 +1,28 @@
-"""The chain shells' shared rules: how long an ``idle`` step waits, and which
-qubits a shot resets.
+"""The chain shells' shared rules: the Trotter ROUND itself, how long an
+``idle`` step waits, and which qubits a shot resets.
+
+THE ROUND lives here, once (``play_chain_round``). ``qc_trotter_compensation``
+exists to calibrate the exact round ``qc_unidirectional_trotter`` runs, so a
+second copy of the round body would be a second sequence waiting to drift from
+the first - and then the scan calibrates something the chain does not play.
+
+WHY A GLOBAL ``align()`` AFTER EACH SWAP. The two pairs SHARE their relay member,
+so their own ``apply()`` aligns overlap only partially: the first swap's align
+covers source+relay, the second's covers relay+sink, and the sink's timeline is
+not in the first. Relying on the pair aligns to serialize the round would make
+correctness depend on which channels each macro happens to touch, so the round
+is aligned explicitly.
+
+WHERE THE STARK TONES GO is the one thing a run chooses (scqo's
+``stark_timing``, a flag here). After the reset: an ``align()`` separates them
+from the reset and its gap, and the round is strictly sequential. WITH the
+reset: that one ``align()`` is left out, so the tones start at the instant the
+reset macro does - they ride other elements (xy lines against the reset qubit's
+z line), which is all QUA needs to play them together - and the round's closing
+``align()`` waits for whichever ends later, the reset with its gap or the tones.
+The gap stays the reset's in both: it lets a FLUX pulse settle before the next
+round's swap, and a tone on an xy line has nothing to settle. The tones of one
+round are concurrent with each other in both settings.
 
 Both chain probes (``qc_unidirectional_trotter``, ``qc_trotter_compensation``)
 accept ``operation="idle"`` on either of their two round steps. An idle step
@@ -17,11 +40,15 @@ chances to get it wrong.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Optional
+
+from qm.qua import align
 
 from ._coupler_knob import find_coupler_pulse
 
-__all__ = ["chain_reset_qubits", "idle_wait_cycles"]
+__all__ = ["chain_reset_qubits", "check_tones_clear_of_reset", "idle_wait_cycles",
+           "play_chain_round"]
 
 #: QUA's floor for ``wait()``. A shorter wait is not a short wait -- it is a
 #: compile error naming an internal variable, which is how the xy-z delay shell
@@ -79,6 +106,84 @@ def idle_wait_cycles(pair, reference_operation: str) -> int:
             f"flux pulse, below QUA's {MIN_WAIT_CYCLES * 4} ns minimum wait, so "
             f"an 'idle' step on this pair cannot be expressed at all.")
     return cycles
+
+
+def check_tones_clear_of_reset(reset_qubit, toned: Iterable) -> None:
+    """Refuse BY NAME a stark tone on the reset qubit when the tones play WITH
+    its reset. ``toned`` is every qubit that plays a tone, a swept one included.
+
+    After the reset such a tone is inert - it meets a qubit that has just been
+    emptied. During the reset it Stark-shifts the qubit the reset is acting on,
+    and a parametric reset is a narrow resonance: the reset would quietly stop
+    emptying the relay, and nothing in the data would name the tone. scqo
+    refuses this upstream; this is the backstop for a direct builder call.
+    """
+    if any(qubit.name == reset_qubit.name for qubit in toned):
+        raise ValueError(
+            f"{reset_qubit.name} is the reset qubit and also plays a stark tone, "
+            f"while the tones play WITH the reset (stark_timing='with_reset'): the "
+            f"tone would shift it off the reset's resonance during its own reset. "
+            f"Remove it from compensation_amps (and do not sweep it), or play the "
+            f"tones after the reset (stark_timing='after_reset').")
+
+
+def play_chain_round(
+    first_pair,
+    second_pair,
+    reset_qubit,
+    *,
+    first_operation: Optional[str],
+    second_operation: Optional[str],
+    idle_cycles: Mapping[str, int],
+    first_swap_kwargs: Mapping,
+    second_swap_kwargs: Mapping,
+    reset_operation: str,
+    stark_operation: str,
+    tones: Sequence[tuple],
+    gap_cycles: int,
+    stark_with_reset: bool,
+) -> None:
+    """Emit ONE Trotter round: first step, second step, relay reset, stark tones.
+
+    Called inside the caller's round loop; everything that can refuse has
+    already refused (the callers' guard blocks run before any QUA is built).
+
+    A step whose operation is ``None`` is IDLE: it waits ``idle_cycles[<step>]``
+    on the SAME channels the swap would have occupied (``pair.wait`` covers both
+    members and the coupler), so an idle round and a swapping round share a
+    timeline and only the exchange differs. A pair with swap kwargs is driven at
+    that coupler amplitude (the angle knob); empty kwargs play the macro bare.
+
+    ``tones`` is ``(qubit, amplitude_scale)`` per stark tone, in play order; the
+    scale may be a Python float or a QUA variable (the compensation scan's swept
+    one). ``stark_with_reset`` picks where they go - see the module docstring.
+    Ends with a global ``align()``.
+    """
+    if first_operation is None:
+        first_pair.wait(idle_cycles["first_pair"])
+    else:
+        first_pair.macros[first_operation].apply(**first_swap_kwargs)
+    if gap_cycles > 0:
+        first_pair.wait(gap_cycles)
+    align()
+    if second_operation is None:
+        second_pair.wait(idle_cycles["second_pair"])
+    else:
+        second_pair.macros[second_operation].apply(**second_swap_kwargs)
+    if gap_cycles > 0:
+        second_pair.wait(gap_cycles)
+    align()
+    reset_qubit.macros[reset_operation].apply()
+    if gap_cycles > 0:
+        reset_qubit.wait(gap_cycles)
+    # The one statement stark_timing decides. With no tone there is nothing to
+    # move, so the two settings stay the same program, statement for statement.
+    if not (stark_with_reset and tones):
+        align()
+    # Concurrent by design: one compensation instant per round.
+    for qubit, amplitude_scale in tones:
+        qubit.xy.play(stark_operation, amplitude_scale=amplitude_scale)
+    align()
 
 
 def chain_reset_qubits(params, source: str, relay: str, sink: str,

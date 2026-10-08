@@ -20,7 +20,9 @@ Circuit per shot (for a swept compensation amplitude a and step count N):
      Python-float factors and the swept one at the QUA variable ``a``. Each pair
      names its own operation, and either may be IDLE (``operation=None``), which
      waits the swap's length instead of playing it: scanning the tone with one
-     step idled is the background arm.
+     step idled is the background arm. With ``stark_with_reset`` every tone,
+     the swept one included, starts together with the reset instead of after it.
+     The round body is the chain probe's own (``_chain_round.play_chain_round``).
   5. Restore the resonant IFs, then read out every measured qubit.
 
 THE SWEPT TONE IS A QUA VARIABLE, the fixed ones are compile-time constants.
@@ -62,7 +64,12 @@ from qualang_tools.loops import from_array
 
 from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
-from scqo_qm.experiments._chain_round import chain_reset_qubits, idle_wait_cycles
+from scqo_qm.experiments._chain_round import (
+    chain_reset_qubits,
+    check_tones_clear_of_reset,
+    idle_wait_cycles,
+    play_chain_round,
+)
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
 
@@ -124,6 +131,9 @@ def build_program(
     operation_gap_ns: int = 0,
     first_coupler_amp: Optional[float] = None,
     second_coupler_amp: Optional[float] = None,
+    # False = the tones play after the relay's reset; True = with it. The
+    # neutral layer spells the two "after_reset" / "with_reset" (stark_timing).
+    stark_with_reset: bool = False,
     simulate: bool = False,
 ):
     """Build the Trotter-chain compensation-scan QUA program.
@@ -143,6 +153,10 @@ def build_program(
     idle_reference_operation)`` instead, so the round keeps its duration.
     Scanning the tone with one step idled is the background arm — what the Stark
     tone does on its own, with no transport for it to act on.
+
+    ``stark_with_reset`` starts every tone together with the relay's reset
+    instead of after it, exactly as the chain probe does; a tone on
+    ``reset_qubit``, fixed or swept, is refused in that mode.
     """
     measure_qubits = list(measure_qubits)
     num_qubits = len(measure_qubits)
@@ -193,6 +207,9 @@ def build_program(
     check_amp_scale_window(compensation_amps,
                            name=f"swept stark compensation on {swept_qubit.name}",
                            knob="max_compensation_amp")
+    if stark_with_reset:
+        check_tones_clear_of_reset(
+            reset_qubit, [qubit for qubit, _factor in compensation] + [swept_qubit])
     # The swap ANGLE knob, when a run sets it (see _coupler_knob). A pair left at
     # None plays its baked coupler amplitude and is not checked. Each pair is
     # guarded against ITS OWN operation - the coupler pulse belongs to the macro.
@@ -276,36 +293,22 @@ def build_program(
                     # The Trotter step, N times. A dynamic loop bound on r means
                     # N=0 skips the body entirely (the prep-only baseline).
                     with for_(rr, 0, rr < r, rr + 1):
-                        # An idle step waits on the SAME channels the swap would
-                        # have occupied, for the same number of cycles, so the
-                        # two runs share a timeline (see build_program's doc).
-                        if first_operation is None:
-                            first_pair.wait(idle_cycles["first_pair"])
-                        else:
-                            first_pair.macros[first_operation].apply(
-                                **first_swap_kwargs)
-                        if gap_cycles > 0:
-                            first_pair.wait(gap_cycles)
-                        align()
-                        if second_operation is None:
-                            second_pair.wait(idle_cycles["second_pair"])
-                        else:
-                            second_pair.macros[second_operation].apply(
-                                **second_swap_kwargs)
-                        if gap_cycles > 0:
-                            second_pair.wait(gap_cycles)
-                        align()
-                        reset_qubit.macros[reset_operation].apply()
-                        if gap_cycles > 0:
-                            reset_qubit.wait(gap_cycles)
-                        align()
-                        # Concurrent by design: one compensation instant per
-                        # round. The swept tone always plays, at amplitude 0 too,
-                        # so the round keeps its duration at the baseline point.
-                        for qubit, factor in compensation:
-                            qubit.xy.play(stark_operation, amplitude_scale=factor)
-                        swept_qubit.xy.play(stark_operation, amplitude_scale=a)
-                        align()
+                        # The chain probe's own round. The swept tone is one
+                        # more entry of its tone list, at the QUA variable `a`:
+                        # it always plays, at amplitude 0 too, so the round
+                        # keeps its duration at the baseline point.
+                        play_chain_round(
+                            first_pair, second_pair, reset_qubit,
+                            first_operation=first_operation,
+                            second_operation=second_operation,
+                            idle_cycles=idle_cycles,
+                            first_swap_kwargs=first_swap_kwargs,
+                            second_swap_kwargs=second_swap_kwargs,
+                            reset_operation=reset_operation,
+                            stark_operation=stark_operation,
+                            tones=[*compensation, (swept_qubit, a)],
+                            gap_cycles=gap_cycles,
+                            stark_with_reset=stark_with_reset)
 
                     # Restore the resonant IFs before readout.
                     for qubit in toned:
@@ -353,7 +356,10 @@ def acquire(
 from scqo import register
 from scqo.experiments import QcTrotterCompensation
 from scqo.experiments.qc_unidirectional_trotter import chain_roles, pair_specs
-from scqo_qm.experiments.qc_unidirectional_trotter import _vendor_operation
+from scqo_qm.experiments.qc_unidirectional_trotter import (
+    _stark_with_reset,
+    _vendor_operation,
+)
 
 
 @register
@@ -366,13 +372,20 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
         "the swaps, the relay's reset and the stark tone are operations stored in the "
         "QUAM tree and played as stored; a missing one is refused by name, with the "
         "quam_config script that registers it",
-        "every operation of a round is followed by a global align, so the round is "
-        "strictly sequential; the stark tones of one round play together",
+        "with stark_timing=after_reset every operation of a round is followed by a "
+        "global align, so the round is strictly sequential; the stark tones of one "
+        "round play together",
+        "with stark_timing=with_reset the align between the relay's reset and the stark "
+        "tones is left out: the tones start when the reset macro does, and the round "
+        "waits for the later of the reset with its gap and the tones. The macro sets its "
+        "flux line's frequency before it plays; how far that puts its pulse behind the "
+        "tones has not been measured",
         "the stark tones are made off-resonant by moving each toned qubit's intermediate "
         "frequency by stark_detuning_hz for the rounds and back before the readout; a "
         "factor of 2 or more is refused",
-        "a round lasts its operations and gaps plus about 20 ns of program overhead "
-        "(measured on the gateway simulator); operation_gap_ns has to be a multiple of 4 ns",
+        "a stark_timing=after_reset round lasts its operations and gaps plus about 20 ns "
+        "of program overhead (measured on the gateway simulator; a with_reset round has "
+        "not been measured); operation_gap_ns has to be a multiple of 4 ns",
         "an idle step waits the longer of the control's and the coupler's copy of "
         "idle_reference_operation's pulse",
         "swap_coupler_flux is divided by the stored amplitude of the operation's coupler "
@@ -442,6 +455,7 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
             operation_gap_ns=int(self.params.operation_gap_ns),
             first_coupler_amp=coupler_flux.get(first_name),
             second_coupler_amp=coupler_flux.get(second_name),
+            stark_with_reset=_stark_with_reset(self.params.stark_timing),
         )
 
     def reduce_raw(self, raw: xr.Dataset) -> xr.Dataset:

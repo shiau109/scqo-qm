@@ -109,6 +109,12 @@ def _kwargs(**overrides):
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
         ({"prep": [(_qubit("q1"), "x270")]}, "no xy operation 'x270'"),
         ({"stark_operation": "tone"}, "no xy operation 'tone'"),
+        # with the tones DURING the reset, none may sit on the reset qubit (q2):
+        # not a fixed one, and not the swept one
+        ({"stark_with_reset": True, "compensation": [(_qubit("q2"), 0.2)]},
+         "q2 is the reset qubit and also plays a stark tone"),
+        ({"stark_with_reset": True, "swept_qubit": _qubit("q2")},
+         "q2 is the reset qubit and also plays a stark tone"),
     ],
 )
 def test_guards_refuse_by_name_before_any_qua(override, message):
@@ -234,6 +240,35 @@ def test_build_program_renders_the_scan(live_chain):
     assert axes["compensation_amp"].attrs["units"] == ""
     # both chain qubits carrying a tone get detuned and restored
     assert "update_frequency" in script
+
+
+def test_stark_with_reset_drops_exactly_the_align_before_the_tones(live_chain):
+    """The scan plays the chain probe's own round (``_chain_round``), so the two
+    timings differ here by the same ONE statement: the ``align()`` between the
+    relay's reset (with its gap) and the tones. The swept tone moves with the
+    fixed one - a scan that left it behind would calibrate another round."""
+    from qm import generate_qua_script
+
+    config = live_chain.generate_config()
+
+    def lines(**overrides):
+        prog, _axes = build_program(**_live_kwargs(
+            live_chain, operation_gap_ns=20, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    after, together = lines(), lines(stark_with_reset=True)
+    assert len(after) == len(together) + 1
+    at = next(i for i, (a, b) in enumerate(zip(after, together)) if a != b)
+    assert after[:at] + after[at + 1:] == together
+    assert after[at].strip() == "align()"
+    assert 'play("parametric_reset", "q2.z")' in after[at - 2]
+    assert after[at - 1].strip().startswith("wait(5,") and '"q2.z"' in after[at - 1]
+    # fixed tone first, then the swept one at its QUA variable, then the align
+    reset = next(i for i, ln in enumerate(together) if "parametric_reset" in ln)
+    assert 'play("stark"*amp(0.25), "q3.xy")' in together[reset + 2]
+    assert 'play("stark"*amp(v' in together[reset + 3] and '"q1.xy"' in together[reset + 3]
+    assert together[reset + 4].strip() == "align()"
 
 
 def test_shot_mode_adds_the_shot_axis(live_chain):

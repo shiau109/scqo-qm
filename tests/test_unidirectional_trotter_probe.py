@@ -115,6 +115,10 @@ def _kwargs(**overrides):
         # the angle knob has nothing to turn on a step that plays no pulse
         ({"first_operation": None, "first_coupler_amp": 0.04},
          "is an idle step but was given a coupler amplitude"),
+        # with the tones DURING the reset, one on the reset qubit (q2 is in the
+        # default compensation) would detune the qubit the reset is acting on
+        ({"stark_with_reset": True},
+         "q2 is the reset qubit and also plays a stark tone"),
     ],
 )
 def test_guards_refuse_by_name_before_any_qua(override, message):
@@ -286,6 +290,63 @@ def test_the_round_is_swap_swap_reset_stark_in_that_order(live_chain):
     assert marks == sorted(marks), body
 
 
+def _ends(machine):
+    """A tone on each chain END and none on the relay: the compensation a
+    ``stark_with_reset`` round can carry."""
+    return [(machine.qubits["q1"], 0.3), (machine.qubits["q3"], 0.25)]
+
+
+def test_stark_with_reset_drops_exactly_the_align_before_the_tones(live_chain):
+    """The whole difference between the two timings is ONE statement: the
+    ``align()`` that makes the tones wait for the relay's reset and its gap.
+    Without it they start with the reset macro (other elements), and the
+    round's closing align waits for whichever ends later. Everything else -
+    prep, both swaps, the gap, the readout - is the same program, which is what
+    lets one estimator read both."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def lines(**overrides):
+        prog, _axes = build_program(**_live_kwargs(
+            machine, compensation=_ends(machine), operation_gap_ns=20, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    after, together = lines(), lines(stark_with_reset=True)
+    assert len(after) == len(together) + 1
+    at = next(i for i, (a, b) in enumerate(zip(after, together)) if a != b)
+    assert after[:at] + after[at + 1:] == together
+    assert after[at].strip() == "align()"
+    # ...and it is the one between the reset's gap and the first tone
+    assert 'play("parametric_reset", "q2.z")' in after[at - 2]
+    assert after[at - 1].strip().startswith("wait(5,") and '"q2.z"' in after[at - 1]
+    assert 'play("stark"' in after[at + 1]
+    # in the with_reset round nothing separates the reset's gap from the tones
+    reset = next(i for i, ln in enumerate(together) if "parametric_reset" in ln)
+    assert 'play("stark"*amp(0.3), "q1.xy")' in together[reset + 2]
+    assert 'play("stark"*amp(0.25), "q3.xy")' in together[reset + 3]
+    assert together[reset + 4].strip() == "align()"
+
+
+def test_stark_with_reset_without_a_tone_is_the_same_program(live_chain):
+    """No tone, nothing to move: scqo documents the two timings as ONE round
+    then, so they must not differ by a stray align either."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(**overrides):
+        prog, _axes = build_program(**_live_kwargs(
+            machine, compensation=[], operation_gap_ns=20, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    assert script() == script(stark_with_reset=True)
+
+
 def test_shot_and_average_modes_differ_only_in_the_stream(live_chain):
     """One program, two stream terminals: the shot loop is identical and only
     what stream_processing does with the states changes, so a mode switch can
@@ -395,18 +456,17 @@ def _live_experiment(machine, **params):
 
     roster = parse_components(roster_toml_for(machine))
     backend = QMBackend(machine, roster=roster)
+    settings = dict(
+        targets=list(CHAIN),
+        first_pair={"pair": _composite_over(roster, CHAIN[:2]), "operation": SWAP},
+        second_pair={"pair": _composite_over(roster, CHAIN[1:]), "operation": SWAP},
+        reset_qubit="q2", idle_reference_operation=SWAP,
+        reset_operation=RESET_MACRO,
+        compensation_amps={"q1": 0.3, "q2": 0.2, "q3": 0.25},
+        max_rounds=5, num_averages=10)
+    settings.update(params)
     exp = QMQcUnidirectionalTrotter(
-        backend,
-        QMQcUnidirectionalTrotter.Parameters(
-            targets=list(CHAIN),
-            first_pair={"pair": _composite_over(roster, CHAIN[:2]),
-                        "operation": SWAP},
-            second_pair={"pair": _composite_over(roster, CHAIN[1:]),
-                         "operation": SWAP},
-            reset_qubit="q2", idle_reference_operation=SWAP,
-            reset_operation=RESET_MACRO,
-            compensation_amps={"q1": 0.3, "q2": 0.2, "q3": 0.25},
-            max_rounds=5, num_averages=10, **params))
+        backend, QMQcUnidirectionalTrotter.Parameters(**settings))
     exp.sweep_axes = exp.define_sweep()   # the Session's job before the hook
     return backend, exp
 
@@ -480,6 +540,32 @@ def test_probe_translates_the_neutral_idle_into_the_builders_none(live_chain):
     from_probe, _axes = exp.probe()
     direct, _ = build_program(**_live_kwargs(machine, first_operation=None))
     assert script(from_probe) == script(direct)
+
+
+def test_probe_translates_stark_timing_into_the_builders_flag(live_chain):
+    """scqo spells the setting stark_timing='with_reset' and the builder takes a
+    flag; the adapter is the one place the two meet. And scqo's own gate comes
+    first: a tone on the reset qubit never reaches the builder."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    _backend, exp = _live_experiment(
+        machine, readout_mode="shot", stark_timing="with_reset",
+        compensation_amps={"q1": 0.3, "q3": 0.25})
+    from_probe, _axes = exp.probe()
+    direct, _ = build_program(**_live_kwargs(
+        machine, compensation=_ends(machine), stark_with_reset=True))
+    after, _ = build_program(**_live_kwargs(machine, compensation=_ends(machine)))
+    assert script(from_probe) == script(direct) != script(after)
+
+    with pytest.raises(ValueError, match="names the reset qubit 'q2'"):
+        _live_experiment(machine, stark_timing="with_reset")
 
 
 def test_preview_renders_the_chain_without_touching_the_network(live_chain,
