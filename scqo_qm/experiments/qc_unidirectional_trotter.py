@@ -12,6 +12,9 @@ Circuit per shot (for a swept Trotter-step count N):
      QUAM's active reset (measure, conditional pi). This is the BETWEEN-SHOTS
      initialization; the relay's mid-circuit reset in step 4 is a separate,
      parametric one and does not change with it.
+     Where a run names ``init_resets``, each of those qubits then plays its own
+     parametric-reset macro once, all together, and waits out a ring-down: the
+     thermal wait ends at the thermal population, and this empties what is left.
   2. State prep: ``qubit.xy.play(operation)`` for every ``(qubit, operation)``
      in ``prep``, ONCE and concurrently, at the resonant IF - by default a single
      excitation on the chain source; the chain is watched, not pumped.
@@ -76,9 +79,11 @@ from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
 from scqo_qm.experiments._chain_round import (
     chain_reset_qubits,
+    check_init_resets,
     check_tones_clear_of_reset,
     idle_wait_cycles,
     play_chain_round,
+    play_init_resets,
 )
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
@@ -142,6 +147,11 @@ def build_program(
     # False = the tones play after the relay's reset; True = with it. The
     # neutral layer spells the two "after_reset" / "with_reset" (stark_timing).
     stark_with_reset: bool = False,
+    # Qubit objects whose reset macro also plays ONCE at the start of every shot,
+    # and the ring-down each then waits before the prep (scqo's init_reset_qubits
+    # / init_reset_ringdown_ns). Empty = the shot as it always was.
+    init_resets: Sequence = (),
+    init_reset_ringdown_ns: int = 0,
     simulate: bool = False,
 ):
     """Build the unidirectional-Trotter-chain QUA program.
@@ -181,6 +191,12 @@ def build_program(
     ``reset_type`` / ``reset_max_attempts`` are the between-shots initialization
     of every involved qubit (QUAM ``reset(..., max_attempts=)``; an upper bound
     on QM's repeat-until-success loop, unused by a thermal reset).
+
+    ``init_resets`` are qubit objects whose ``macros[reset_operation]`` also
+    plays once per shot, right after that initialization and before the prep,
+    all starting together; each waits ``init_reset_ringdown_ns`` in place of its
+    stored ring-down (``_chain_round.play_init_resets``). A qubit without the
+    macro, or with a macro that is not a parametric reset, is refused by name.
     """
     measure_qubits = list(measure_qubits)
     num_qubits = len(measure_qubits)
@@ -207,6 +223,8 @@ def build_program(
         else:
             _check_macro(pair, operation, what)
     _check_macro(reset_qubit, reset_operation, "reset_qubit")
+    init_resets = list(init_resets)
+    check_init_resets(init_resets, reset_operation, init_reset_ringdown_ns)
     for qubit, operation in prep:
         if operation not in qubit.xy.operations:
             raise ValueError(
@@ -246,7 +264,8 @@ def build_program(
             label=f"{pair.name} swap_coupler_flux")
 
     involved = _dedup_involved(measure_qubits, [first_pair, second_pair],
-                               [reset_qubit, *(qubit for qubit, _op in prep)])
+                               [reset_qubit, *(qubit for qubit, _op in prep),
+                                *init_resets])
     # The off-resonant IF each compensated qubit's tone plays at, and the
     # resonant one it is restored to for prep and readout.
     base_if = {qubit.name: qubit.xy.intermediate_frequency
@@ -294,6 +313,12 @@ def build_program(
                     qubit.reset(reset_type, simulate,
                                 max_attempts=reset_max_attempts)
                 align()
+
+                # The parametric reset at the start of the shot, where a run asks
+                # for one: it empties what the reset above left. Nothing at all
+                # when no qubit is named.
+                play_init_resets(init_resets, reset_operation,
+                                 init_reset_ringdown_ns)
 
                 # State prep, once, resonant IF: concurrent across the prep
                 # qubits (each on its own xy line), then one align.
@@ -425,6 +450,11 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         "pulse, so a coupler pulse stored at zero is refused by name",
         "with reset_method=active every qubit a shot resets needs its discriminator, "
         "also one that is not a target",
+        "init_reset_qubits plays each named qubit's stored reset macro once per shot, "
+        "after the between-shots reset and before the prep, all starting together; "
+        "each waits init_reset_ringdown_ns in place of the ring-down stored on the "
+        "macro. A qubit without that macro, or whose macro is not a parametric reset, "
+        "is refused by name",
         "readout_mode=average averages on the instrument; shot keeps every shot",
     )
 
@@ -490,6 +520,12 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
             keep_shots=self.params.readout_mode == "shot",
             operation_gap_ns=int(self.params.operation_gap_ns),
             stark_with_reset=_stark_with_reset(self.params.stark_timing),
+            # the same flux-line join as the reset qubit's: scqo's chain_roles
+            # has already refused a name that is not on the chain
+            init_resets=[vendor_qubit(self, name, field="init_reset_qubits",
+                                      kind="flux")
+                         for name in self.params.init_reset_qubits],
+            init_reset_ringdown_ns=int(self.params.init_reset_ringdown_ns),
         )
 
     def reduce_raw(self, raw: xr.Dataset) -> xr.Dataset:

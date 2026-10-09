@@ -273,6 +273,39 @@ def test_stark_with_reset_drops_exactly_the_align_before_the_tones(live_chain):
     assert together[reset + 5].strip() == "align()"
 
 
+def test_the_scan_plays_the_chains_init_reset(live_chain):
+    """The scan calibrates the shot the chain runs, so a reset at the start of
+    the shot has to be in both: the same block (the macro, the run's ring-down,
+    a global align) between the between-shots reset and the prep, and nothing
+    else moved. With no qubit named the scan is the program it was."""
+    from qm import generate_qua_script
+
+    config = live_chain.generate_config()
+    q2 = live_chain.qubits["q2"]
+
+    def lines(**overrides):
+        prog, _axes = build_program(**_live_kwargs(live_chain, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    plain = lines()
+    assert lines(init_resets=[], init_reset_ringdown_ns=400) == plain
+
+    reset = lines(init_resets=[q2], init_reset_ringdown_ns=400)
+    at = next(i for i, (a, b) in enumerate(zip(plain, reset)) if a != b)
+    added = len(reset) - len(plain)
+    assert reset[:at] + reset[at + added:] == plain
+    block = [ln.strip() for ln in reset[at:at + added]]
+    assert block[2] == 'play("parametric_reset", "q2.z")'
+    assert block[5].startswith("wait(100,") and '"q2.z"' in block[5]
+    assert block[-1] == "align()" and len(block) == 7
+    assert reset[at + added].strip() == 'play("x180", "q1.xy")'
+
+    # the guards are the chain probe's own (_chain_round.check_init_resets)
+    with pytest.raises(ValueError, match="init_reset_qubits names q1, which has no macro"):
+        build_program(**_kwargs(init_resets=[_qubit("q1")]))
+
+
 def test_shot_mode_adds_the_shot_axis(live_chain):
     _prog, axes = build_program(**_live_kwargs(live_chain, keep_shots=True))
     assert list(axes) == ["qubit", "shot_idx", "compensation_amp", "round_count"]

@@ -61,6 +61,14 @@ def _pair(name, macros=(SWAP,), pulse_ns=PULSE_NS):
     )
 
 
+def _reset_ready(name):
+    """A stub qubit carrying a reset macro whose ring-down a call can set - the
+    shape a reset at the start of a shot needs."""
+    qubit = _qubit(name)
+    qubit.macros[RESET_MACRO] = SimpleNamespace(ringdown_ns=0)
+    return qubit
+
+
 def _kwargs(**overrides):
     """The smallest legal call; overrides replace one piece at a time."""
     q1, q2, q3 = (_qubit(n) for n in CHAIN)
@@ -119,6 +127,19 @@ def _kwargs(**overrides):
         # default compensation) would detune the qubit the reset is acting on
         ({"stark_with_reset": True},
          "q2 is the reset qubit and also plays a stark tone"),
+        # the reset at the start of a shot needs the stored macro on EVERY qubit
+        # it names: skipping one would start the chain from another state, and
+        # nothing in the data would say which
+        ({"init_resets": [_qubit("q1")]},
+         "init_reset_qubits names q1, which has no macro 'reset'"),
+        # ...and a macro whose ring-down the call can set
+        ({"init_resets": [_qubit("q3", macros=(RESET_MACRO,))]},
+         "is a SimpleNamespace, not a parametric reset"),
+        # the ring-down is a QUA wait: on the 4 ns grid, 16 ns at least, or none
+        ({"init_resets": [_reset_ready("q3")], "init_reset_ringdown_ns": 6},
+         "init_reset_ringdown_ns must be 0 or a multiple of 4"),
+        ({"init_resets": [_reset_ready("q3")], "init_reset_ringdown_ns": 8},
+         "init_reset_ringdown_ns must be 0 or a multiple of 4"),
     ],
 )
 def test_guards_refuse_by_name_before_any_qua(override, message):
@@ -137,6 +158,31 @@ def test_an_unrepresentable_compensation_factor_is_refused():
         build_program(**_kwargs(compensation=[(q1, 0.3), (q2, 2.5)],
                                 measure_qubits=[q1, q2, q3], reset_qubit=q2,
                                 prep=[(q1, "x180")]))
+
+
+def test_init_resets_start_together_and_close_with_one_align(monkeypatch):
+    """Each named qubit plays its own macro with the run's ring-down, nothing
+    orders them against each other, and ONE global align follows - so the prep
+    waits for the longest of them. With no qubit named nothing is emitted, not
+    even that align: the default shot stays the program it was."""
+    from scqo_qm.experiments import _chain_round
+
+    calls = []
+
+    def reset_qubit(name):
+        def apply(*, ringdown_ns):
+            calls.append((name, ringdown_ns))
+        return SimpleNamespace(
+            name=name, macros={RESET_MACRO: SimpleNamespace(ringdown_ns=0, apply=apply)})
+
+    monkeypatch.setattr(_chain_round, "align", lambda: calls.append("align"))
+    _chain_round.play_init_resets(
+        [reset_qubit("q2"), reset_qubit("q3")], RESET_MACRO, 400)
+    assert calls == [("q2", 400), ("q3", 400), "align"]
+
+    calls.clear()
+    _chain_round.play_init_resets([], RESET_MACRO, 400)
+    assert calls == []
 
 
 def test_reduce_raw_names_the_readout_form():
@@ -347,6 +393,60 @@ def test_stark_with_reset_without_a_tone_is_the_same_program(live_chain):
                 if "generated at" not in ln]
 
     assert script() == script(stark_with_reset=True)
+
+
+def _init_reset_block(plain, reset):
+    """The statements ``reset`` has and ``plain`` lacks, and where they start.
+    Asserts they are ONE contiguous block and that nothing else moved."""
+    at = next(i for i, (a, b) in enumerate(zip(plain, reset)) if a != b)
+    added = len(reset) - len(plain)
+    assert added > 0 and reset[:at] + reset[at + added:] == plain
+    return at, [ln.strip() for ln in reset[at:at + added]]
+
+
+def test_an_init_reset_plays_once_between_the_shot_reset_and_the_prep(live_chain):
+    """init_resets adds one block to a shot and changes nothing else: the named
+    qubit's reset macro, the run's ring-down in place of the stored one, and a
+    global align. It sits after the between-shots reset and before the prep, so
+    the prep pulse meets a qubit whose resonator has emptied."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+    q2 = machine.qubits["q2"]
+
+    def lines(**overrides):
+        prog, _axes = build_program(**_live_kwargs(machine, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    plain = lines()
+    # no qubit named: the program it was, whatever the ring-down says
+    assert lines(init_resets=[], init_reset_ringdown_ns=400) == plain
+
+    reset = lines(init_resets=[q2], init_reset_ringdown_ns=400)
+    at, block = _init_reset_block(plain, reset)
+    drive = q2.macros[RESET_MACRO].drive_frequency
+    assert block[0].startswith(f'update_frequency("q2.z", {drive},')
+    assert block[1] == 'reset_if_phase("q2.z")'
+    assert block[2] == 'play("parametric_reset", "q2.z")'
+    assert block[3].startswith('update_frequency("q2.z", 0,')
+    # the ring-down holds every channel of the qubit, for the run's 400 ns
+    assert block[4].startswith("align(") and '"q2.xy"' in block[4]
+    assert block[5].startswith("wait(100,")
+    for channel in ("q2.xy", "q2.z", "q2.resonator"):
+        assert f'"{channel}"' in block[5]
+    assert block[6:] == ["align()"]
+    # before it: the between-shots reset's align; after it: the prep
+    assert reset[at - 1].strip() == "align()"
+    assert reset[at + len(block)].strip() == 'play("x180", "q1.xy")'
+    # once per shot, not per round: the rounds still carry their own reset
+    assert sum("reset_if_phase" in ln for ln in reset) == 2
+
+    # a ring-down of 0 plays the macro bare and still closes with the align
+    _at, bare = _init_reset_block(
+        plain, lines(init_resets=[q2], init_reset_ringdown_ns=0))
+    assert bare[:4] == block[:4] and bare[4:] == ["align()"]
 
 
 def test_shot_and_average_modes_differ_only_in_the_stream(live_chain):
@@ -568,6 +668,38 @@ def test_probe_translates_stark_timing_into_the_builders_flag(live_chain):
 
     with pytest.raises(ValueError, match="names the reset qubit 'q2'"):
         _live_experiment(machine, stark_timing="with_reset")
+
+
+def test_probe_hands_init_reset_qubits_to_the_builder(live_chain):
+    """scqo names the qubits and the wait; the adapter joins the names to their
+    QUAM objects through the flux door and passes the wait on. scqo's own gates
+    come first: a name off the chain never reaches the builder, and a chain
+    qubit that carries no reset macro is refused by the builder, by name."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    _backend, exp = _live_experiment(
+        machine, readout_mode="shot", init_reset_qubits=["q2"])
+    from_probe, _axes = exp.probe()
+    # 400 ns is scqo's default ring-down
+    direct, _ = build_program(**_live_kwargs(
+        machine, init_resets=[machine.qubits["q2"]], init_reset_ringdown_ns=400))
+    plain, _ = build_program(**_live_kwargs(machine))
+    assert script(from_probe) == script(direct) != script(plain)
+
+    with pytest.raises(ValueError, match="'q4', which is not on the chain"):
+        _live_experiment(machine, init_reset_qubits=["q4"])
+    if RESET_MACRO not in machine.qubits["q1"].macros:
+        _backend, exp = _live_experiment(machine, init_reset_qubits=["q1", "q2"])
+        with pytest.raises(ValueError,
+                           match="init_reset_qubits names q1, which has no macro"):
+            exp.probe()
 
 
 def test_preview_renders_the_chain_without_touching_the_network(live_chain,

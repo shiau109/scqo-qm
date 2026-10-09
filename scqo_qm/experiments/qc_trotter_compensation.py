@@ -66,9 +66,11 @@ from scqo_qm.experiments._lib import acquire as _acquire
 from scqo_qm.experiments._amp_limits import check_amp_scale_window
 from scqo_qm.experiments._chain_round import (
     chain_reset_qubits,
+    check_init_resets,
     check_tones_clear_of_reset,
     idle_wait_cycles,
     play_chain_round,
+    play_init_resets,
 )
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
@@ -134,6 +136,11 @@ def build_program(
     # False = the tones play after the relay's reset; True = with it. The
     # neutral layer spells the two "after_reset" / "with_reset" (stark_timing).
     stark_with_reset: bool = False,
+    # Qubit objects whose reset macro also plays ONCE at the start of every shot,
+    # and the ring-down each then waits before the prep (scqo's init_reset_qubits
+    # / init_reset_ringdown_ns). Empty = the shot as it always was.
+    init_resets: Sequence = (),
+    init_reset_ringdown_ns: int = 0,
     simulate: bool = False,
 ):
     """Build the Trotter-chain compensation-scan QUA program.
@@ -157,6 +164,9 @@ def build_program(
     ``stark_with_reset`` starts every tone together with the relay's reset
     instead of after it, exactly as the chain probe does; a tone on
     ``reset_qubit``, fixed or swept, is refused in that mode.
+
+    ``init_resets`` / ``init_reset_ringdown_ns`` are the chain probe's reset at
+    the start of a shot, played by the same ``_chain_round.play_init_resets``.
     """
     measure_qubits = list(measure_qubits)
     num_qubits = len(measure_qubits)
@@ -184,6 +194,8 @@ def build_program(
         else:
             _check_macro(pair, operation, what)
     _check_macro(reset_qubit, reset_operation, "reset_qubit")
+    init_resets = list(init_resets)
+    check_init_resets(init_resets, reset_operation, init_reset_ringdown_ns)
     for qubit, operation in prep:
         if operation not in qubit.xy.operations:
             raise ValueError(
@@ -229,7 +241,8 @@ def build_program(
             label=f"{pair.name} swap_coupler_flux")
 
     involved = _dedup_involved(measure_qubits, [first_pair, second_pair],
-                               [reset_qubit, *(qubit for qubit, _op in prep)])
+                               [reset_qubit, *(qubit for qubit, _op in prep),
+                                *init_resets])
     # Every qubit that plays a tone needs its IF detuned, the swept one included.
     toned = [qubit for qubit, _factor in compensation] + [swept_qubit]
     base_if = {qubit.name: qubit.xy.intermediate_frequency for qubit in toned}
@@ -278,6 +291,11 @@ def build_program(
                         qubit.reset(reset_type, simulate,
                                     max_attempts=reset_max_attempts)
                     align()
+
+                    # The chain probe's reset at the start of the shot, where a
+                    # run asks for one; nothing when no qubit is named.
+                    play_init_resets(init_resets, reset_operation,
+                                     init_reset_ringdown_ns)
 
                     # State prep, once, resonant IF (one qubit: scqo refuses more).
                     for qubit, operation in prep:
@@ -394,6 +412,11 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
         "pulse, so a coupler pulse stored at zero is refused by name",
         "with reset_method=active every qubit a shot resets needs its discriminator, "
         "also one that is not a target",
+        "init_reset_qubits plays each named qubit's stored reset macro once per shot, "
+        "after the between-shots reset and before the prep, all starting together; "
+        "each waits init_reset_ringdown_ns in place of the ring-down stored on the "
+        "macro. A qubit without that macro, or whose macro is not a parametric reset, "
+        "is refused by name",
         "readout_mode=average averages on the instrument; shot keeps every shot",
     )
 
@@ -458,6 +481,10 @@ class QMQcTrotterCompensation(QcTrotterCompensation):
             first_coupler_amp=coupler_flux.get(first_name),
             second_coupler_amp=coupler_flux.get(second_name),
             stark_with_reset=_stark_with_reset(self.params.stark_timing),
+            init_resets=[vendor_qubit(self, name, field="init_reset_qubits",
+                                      kind="flux")
+                         for name in self.params.init_reset_qubits],
+            init_reset_ringdown_ns=int(self.params.init_reset_ringdown_ns),
         )
 
     def reduce_raw(self, raw: xr.Dataset) -> xr.Dataset:

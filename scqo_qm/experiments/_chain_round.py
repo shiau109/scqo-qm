@@ -1,5 +1,7 @@
 """The chain shells' shared rules: the Trotter ROUND itself, how long an
-``idle`` step waits, and which qubits a shot resets.
+``idle`` step waits, which qubits a shot resets, and the optional parametric
+reset at the START of a shot (``check_init_resets`` / ``play_init_resets``,
+scqo's ``init_reset_qubits``).
 
 THE ROUND lives here, once (``play_chain_round``). ``qc_trotter_compensation``
 exists to calibrate the exact round ``qc_unidirectional_trotter`` runs, so a
@@ -47,8 +49,8 @@ from qm.qua import align
 
 from ._coupler_knob import find_coupler_pulse
 
-__all__ = ["chain_reset_qubits", "check_tones_clear_of_reset", "idle_wait_cycles",
-           "play_chain_round"]
+__all__ = ["chain_reset_qubits", "check_init_resets", "check_tones_clear_of_reset",
+           "idle_wait_cycles", "play_chain_round", "play_init_resets"]
 
 #: QUA's floor for ``wait()``. A shorter wait is not a short wait -- it is a
 #: compile error naming an internal variable, which is how the xy-z delay shell
@@ -125,6 +127,64 @@ def check_tones_clear_of_reset(reset_qubit, toned: Iterable) -> None:
             f"tone would shift it off the reset's resonance during its own reset. "
             f"Remove it from compensation_amps (and do not sweep it), or play the "
             f"tones after the reset (stark_timing='after_reset').")
+
+
+def check_init_resets(qubits: Iterable, reset_operation: str,
+                      ringdown_ns: int) -> None:
+    """Refuse BY NAME what ``play_init_resets`` could not play, before any QUA.
+
+    ``qubits`` are the ones scqo's ``init_reset_qubits`` names. Each needs the
+    stored reset macro, and one whose ring-down a call can set: the wait before
+    the prep is the run's, not the one stored for the rounds. A macro of
+    another kind under that name is refused rather than played with whatever
+    wait it has.
+    """
+    qubits = list(qubits)
+    if not qubits:
+        return
+    if ringdown_ns != 0 and (ringdown_ns < MIN_WAIT_CYCLES * 4 or ringdown_ns % 4):
+        raise ValueError(
+            f"init_reset_ringdown_ns must be 0 or a multiple of 4 ns of at least "
+            f"{MIN_WAIT_CYCLES * 4} ns (QUA's shortest wait), got {ringdown_ns!r}.")
+    for qubit in qubits:
+        macros = getattr(qubit, "macros", {}) or {}
+        if reset_operation not in macros:
+            raise ValueError(
+                f"init_reset_qubits names {qubit.name}, which has no macro "
+                f"{reset_operation!r}; available: {sorted(macros)}. Store its reset "
+                f"tone first (quam_config/register_reset_macro.py; SCQO "
+                f"procedures/qubit-resonator-sideband-swap, Step 5), or leave the "
+                f"qubit out.")
+        macro = macros[reset_operation]
+        if not hasattr(macro, "ringdown_ns"):
+            raise ValueError(
+                f"init_reset_qubits names {qubit.name}, whose macro "
+                f"{reset_operation!r} is a {type(macro).__name__}, not a parametric "
+                f"reset: the reset at the start of a shot is played with "
+                f"init_reset_ringdown_ns as its ring-down, which only a "
+                f"ParametricReset takes.")
+
+
+def play_init_resets(qubits: Iterable, reset_operation: str,
+                     ringdown_ns: int) -> None:
+    """Emit the reset at the START of a shot: every named qubit's stored reset,
+    all starting together, then one global ``align()``.
+
+    Called after the between-shots reset and its align, before the prep. Each
+    macro plays on its own qubit's z line, so nothing orders them against each
+    other, and each waits ``ringdown_ns`` on its own qubit in place of its
+    stored ring-down. The closing align makes the prep wait for the longest of
+    them, so every reset is followed by at least that ring-down.
+
+    With no qubit named this emits NOTHING - not even the align - so a run that
+    does not ask for it is the program it was, statement for statement.
+    """
+    qubits = list(qubits)
+    if not qubits:
+        return
+    for qubit in qubits:
+        qubit.macros[reset_operation].apply(ringdown_ns=int(ringdown_ns))
+    align()
 
 
 def play_chain_round(
