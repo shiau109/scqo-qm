@@ -30,17 +30,20 @@ class ParametricReset(QubitMacro):
     to its readout resonator as a photon, which leaves at kappa; until it has left, a gate
     or a readout on this qubit sees its dispersive shift. The wait covers every channel of
     the qubit, so whatever plays on it next starts after the ring-down. 0 (the default)
-    waits nothing and returns as soon as the pulse ends.
+    waits nothing and returns as soon as the pulse ends. `apply(ringdown_ns=...)` replaces
+    the stored wait for that one call: `qubit_ramsey_reset_ringdown` plays the reset with
+    0 to measure what the wait has to be.
     """
 
     drive_frequency: int  # parametric drive frequency in Hz (z-line IF)
     flux_pulse: str = "parametric_reset"  # z operation to play
     ringdown_ns: int = 0  # wait after the pulse (ns): 0, or a multiple of 4 from 16 up
 
-    def apply(self):
+    def apply(self, *, ringdown_ns=None):
         # Both refusals fire before a single statement is emitted.
         rest_frequency = self._rest_frequency()
-        ringdown_cycles = self._ringdown_cycles()
+        ringdown_cycles = self._ringdown_cycles(
+            self.ringdown_ns if ringdown_ns is None else ringdown_ns)
 
         z = self.qubit.z
         z.update_frequency(self.drive_frequency)
@@ -83,9 +86,8 @@ class ParametricReset(QubitMacro):
                 f"to 0 in the QUAM state.")
         return int(z.intermediate_frequency)
 
-    def _ringdown_cycles(self) -> int:
-        """The ring-down in 4 ns clock cycles; refuses one QUA cannot wait."""
-        ringdown_ns = self.ringdown_ns
+    def _ringdown_cycles(self, ringdown_ns) -> int:
+        """``ringdown_ns`` in 4 ns clock cycles; refuses one QUA cannot wait."""
         if ringdown_ns == 0:
             return 0
         if ringdown_ns < MIN_WAIT_NS or ringdown_ns % 4:

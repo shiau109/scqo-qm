@@ -99,6 +99,24 @@ def test_the_ringdown_waits_on_the_whole_qubit_after_aligning_it(attach):
     assert calls == PULSE + [("update_frequency", 0), ("align",), ("wait", 8)]
 
 
+def test_a_call_can_replace_the_stored_ringdown(attach):
+    """``qubit_ramsey_reset_ringdown`` plays the reset with 0 to measure what the
+    wait has to be; the stored value is not touched."""
+    macro, calls = attach(ringdown_ns=32)
+    macro.apply(ringdown_ns=0)
+    assert calls == PULSE + [("update_frequency", 0)]
+    assert macro.ringdown_ns == 32
+
+    macro, calls = attach()
+    macro.apply(ringdown_ns=48)
+    assert calls[-2:] == [("align",), ("wait", 12)]
+
+    macro, calls = attach()
+    with pytest.raises(ValueError, match="ringdown_ns must be 0 or a multiple of 4 ns"):
+        macro.apply(ringdown_ns=10)
+    assert calls == []
+
+
 @pytest.mark.parametrize("ringdown_ns", [4, 12, 18, 30, -16, 16.5])
 def test_a_ringdown_qua_cannot_wait_is_refused_by_name(attach, ringdown_ns):
     """Below 16 ns QUA's wait() is a compile error naming an internal variable,

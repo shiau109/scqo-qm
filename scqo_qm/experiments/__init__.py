@@ -53,6 +53,7 @@ from . import qubit_pi_pulse_error  # noqa: F401  (import side effect: @register
 from . import qubit_power_rabi  # noqa: F401  (import side effect: @register)
 from . import qubit_ramsey  # noqa: F401  (import side effect: @register)
 from . import qubit_ramsey_phasor  # noqa: F401  (import side effect: @register)
+from . import qubit_ramsey_reset_ringdown  # noqa: F401  (import side effect: @register)
 from . import qubit_relaxation  # noqa: F401  (import side effect: @register)
 from . import qubit_relaxation_flux_pulse  # noqa: F401  (import side effect: @register)
 from . import qubit_resonator_stark  # noqa: F401  (import side effect: @register)
