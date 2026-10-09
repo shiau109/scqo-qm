@@ -21,6 +21,9 @@ from scqo_qm.components.macros.parametric_reset_macro import ParametricReset
 
 FLUX_PULSE = "parametric_reset"  # z op played by the macro
 DRIVE_FREQUENCY = 375_000_000  # PLACEHOLDER - parametric drive frequency in Hz (z-line IF)
+# Wait after the pulse while the photon leaves the resonator (ns): 0, or a multiple of 4
+# from 16 up. It lengthens every round of an experiment that calls the reset.
+RINGDOWN_NS = 0
 
 STATE = state_folder(__doc__.splitlines()[0])
 machine = load_state(STATE)
@@ -34,7 +37,8 @@ q2.z.operations[FLUX_PULSE] = SquarePulse(
 )
 
 # --- Attach the bare-callable macro under the key the node looks up ("reset") -------------
-q2.macros["reset"] = ParametricReset(drive_frequency=DRIVE_FREQUENCY, flux_pulse=FLUX_PULSE)
+q2.macros["reset"] = ParametricReset(
+    drive_frequency=DRIVE_FREQUENCY, flux_pulse=FLUX_PULSE, ringdown_ns=RINGDOWN_NS)
 
 print("q2.z ops:", list(q2.z.operations.keys()))
 print("q2 macros:", list(q2.macros.keys()))

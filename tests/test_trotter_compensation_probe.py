@@ -262,13 +262,15 @@ def test_stark_with_reset_drops_exactly_the_align_before_the_tones(live_chain):
     at = next(i for i, (a, b) in enumerate(zip(after, together)) if a != b)
     assert after[:at] + after[at + 1:] == together
     assert after[at].strip() == "align()"
-    assert 'play("parametric_reset", "q2.z")' in after[at - 2]
+    # the reset macro ends by returning its z line to the stored IF; the gap follows it
+    assert 'play("parametric_reset", "q2.z")' in after[at - 3]
+    assert after[at - 2].strip().startswith('update_frequency("q2.z", 0,')
     assert after[at - 1].strip().startswith("wait(5,") and '"q2.z"' in after[at - 1]
     # fixed tone first, then the swept one at its QUA variable, then the align
     reset = next(i for i, ln in enumerate(together) if "parametric_reset" in ln)
-    assert 'play("stark"*amp(0.25), "q3.xy")' in together[reset + 2]
-    assert 'play("stark"*amp(v' in together[reset + 3] and '"q1.xy"' in together[reset + 3]
-    assert together[reset + 4].strip() == "align()"
+    assert 'play("stark"*amp(0.25), "q3.xy")' in together[reset + 3]
+    assert 'play("stark"*amp(v' in together[reset + 4] and '"q1.xy"' in together[reset + 4]
+    assert together[reset + 5].strip() == "align()"
 
 
 def test_shot_mode_adds_the_shot_axis(live_chain):

@@ -409,14 +409,16 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         "with stark_timing=with_reset the align between the relay's reset and the stark "
         "tones is left out: the tones start when the reset macro does, and the round "
         "waits for the later of the reset with its gap and the tones. The macro sets its "
-        "flux line's frequency before it plays; how far that puts its pulse behind the "
-        "tones has not been measured",
+        "flux line's frequency before it plays and returns it after; how far the first "
+        "puts its pulse behind the tones has not been measured",
         "the stark tones are made off-resonant by moving each toned qubit's intermediate "
         "frequency by stark_detuning_hz for the rounds and back before the readout; a "
         "factor of 2 or more is refused",
-        "a stark_timing=after_reset round lasts its operations and gaps plus about 20 ns "
-        "of program overhead (measured on the gateway simulator; a with_reset round has "
-        "not been measured); operation_gap_ns has to be a multiple of 4 ns",
+        "a stark_timing=after_reset round lasts its operations, the ring-down stored on "
+        "the reset macro and its gaps plus program overhead: about 20 ns on the gateway "
+        "simulator, measured before the reset macro returned its flux line's frequency "
+        "after the pulse and not since (a with_reset round has not been measured); "
+        "operation_gap_ns has to be a multiple of 4 ns",
         "an idle step waits the longer of the control's and the coupler's copy of "
         "idle_reference_operation's pulse",
         "swap_coupler_flux is divided by the stored amplitude of the operation's coupler "
