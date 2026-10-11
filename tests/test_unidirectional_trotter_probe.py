@@ -101,6 +101,10 @@ def _kwargs(**overrides):
     [
         ({"operation_gap_ns": 6}, "multiple of 4"),
         ({"operation_gap_ns": -4}, "multiple of 4"),
+        # the gap after the relay's reset is a QUA wait of its own: on the 4 ns
+        # grid, 16 ns at least, or none
+        ({"reset_gap_ns": 6}, "reset_gap_ns must be 0 or a multiple of 4"),
+        ({"reset_gap_ns": 8}, "reset_gap_ns must be 0 or a multiple of 4"),
         ({"first_pair": _pair("q1_q2", macros=())}, "no macro 'iswap'"),
         ({"second_pair": _pair("q2_q3", macros=("cz",))}, "no macro 'iswap'"),
         ({"reset_operation": "paramreset"}, "no macro 'paramreset'"),
@@ -393,6 +397,57 @@ def test_stark_with_reset_without_a_tone_is_the_same_program(live_chain):
                 if "generated at" not in ln]
 
     assert script() == script(stark_with_reset=True)
+
+
+def test_reset_gap_ns_moves_only_the_wait_after_the_relays_reset(live_chain):
+    """reset_gap_ns is the time between the relay's reset and the next round's
+    first swap, set on its own: 0 removes that one wait, another value replaces
+    it, and the gaps after the two swaps - where a flux pulse settles before the
+    next one - stay operation_gap_ns. Unset, the round is the program it was."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def lines(**overrides):
+        settings = {"operation_gap_ns": 20, **overrides}
+        prog, _axes = build_program(**_live_kwargs(
+            machine, compensation=_ends(machine), stark_with_reset=True, **settings))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    plain = lines()
+    assert lines(reset_gap_ns=None) == plain
+    assert lines(reset_gap_ns=20) == plain
+
+    # 0: exactly one statement fewer, and it is the wait behind the reset
+    none = lines(reset_gap_ns=0)
+    assert len(plain) == len(none) + 1
+    at = next(i for i, (a, b) in enumerate(zip(plain, none)) if a != b)
+    assert plain[:at] + plain[at + 1:] == none
+    assert plain[at].strip().startswith("wait(5,") and '"q2.z"' in plain[at]
+    assert plain[at - 1].strip().startswith('update_frequency("q2.z", 0,')
+    assert 'play("parametric_reset", "q2.z")' in plain[at - 2]
+    # ...so the tones follow the reset macro directly, and the round closes
+    assert 'play("stark"*amp(0.3), "q1.xy")' in none[at]
+    # the two swap gaps are still there, on their pairs' channels
+    body = none[next(i for i, ln in enumerate(none) if 'play("x180"' in ln):]
+    gaps = [ln for ln in body if ln.strip().startswith("wait(5,")]
+    assert len(gaps) == 2 and all('"q2.z"' in ln for ln in gaps)
+    assert f'"{PAIRS[0]}"' in gaps[0] and f'"{PAIRS[1]}"' in gaps[1]
+
+    # another value: the same statement, with that length
+    longer = lines(reset_gap_ns=40)
+    assert len(longer) == len(plain)
+    assert [i for i, (a, b) in enumerate(zip(plain, longer)) if a != b] == [at]
+    assert longer[at] == plain[at].replace("wait(5,", "wait(10,")
+
+    # with no common gap at all the reset can still be given one
+    bare = lines(operation_gap_ns=0)
+    spaced = lines(operation_gap_ns=0, reset_gap_ns=16)
+    assert len(spaced) == len(bare) + 1
+    added = next(i for i, (a, b) in enumerate(zip(spaced, bare)) if a != b)
+    assert spaced[added].strip().startswith("wait(4,") and '"q2.z"' in spaced[added]
 
 
 def _init_reset_block(plain, reset):
@@ -700,6 +755,36 @@ def test_probe_hands_init_reset_qubits_to_the_builder(live_chain):
         with pytest.raises(ValueError,
                            match="init_reset_qubits names q1, which has no macro"):
             exp.probe()
+
+
+def test_probe_hands_reset_gap_ns_to_the_builder(live_chain):
+    """scqo carries the setting as it was given - None when the run does not set
+    it - and the builder resolves it against the common gap."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    def probe(**params):
+        _backend, exp = _live_experiment(machine, readout_mode="shot",
+                                         operation_gap_ns=20, **params)
+        return script(exp.probe()[0])
+
+    def direct(**overrides):
+        return script(build_program(**_live_kwargs(
+            machine, operation_gap_ns=20, **overrides))[0])
+
+    assert probe() == direct()
+    assert probe(reset_gap_ns=0) == direct(reset_gap_ns=0) != direct()
+    assert probe(reset_gap_ns=40) == direct(reset_gap_ns=40) != direct()
+
+    _backend, exp = _live_experiment(machine, reset_gap_ns=8)
+    with pytest.raises(ValueError, match="reset_gap_ns must be 0 or a multiple of 4"):
+        exp.probe()
 
 
 def test_preview_renders_the_chain_without_touching_the_network(live_chain,

@@ -84,6 +84,7 @@ from scqo_qm.experiments._chain_round import (
     idle_wait_cycles,
     play_chain_round,
     play_init_resets,
+    reset_gap_cycles,
 )
 from scqo_qm.experiments._coupler_knob import guard_coupler_amplitudes
 
@@ -142,6 +143,9 @@ def build_program(
     keep_shots: bool,
     reset_max_attempts: int = 15,
     operation_gap_ns: int = 0,
+    # The idle after the relay's reset alone, where a run sets it apart (scqo's
+    # reset_gap_ns): 0 = none. None = operation_gap_ns there too.
+    reset_gap_ns: Optional[int] = None,
     first_coupler_amp: Optional[float] = None,
     second_coupler_amp: Optional[float] = None,
     # False = the tones play after the relay's reset; True = with it. The
@@ -183,6 +187,8 @@ def build_program(
 
     ``operation_gap_ns`` (multiple of 4, default 0) idles after each of the
     round's three flux operations, so a pulse settles before the next fires.
+    ``reset_gap_ns`` sets the one after the relay's reset on its own (0, or a
+    multiple of 4 from 16 up); None leaves it at ``operation_gap_ns``.
 
     ``stark_with_reset`` starts the tones together with the relay's reset
     instead of after it; the round then waits for the later of the reset with
@@ -209,6 +215,7 @@ def build_program(
             f"operation_gap_ns must be a non-negative multiple of 4 ns, got "
             f"{operation_gap_ns}.")
     gap_cycles = operation_gap_ns // 4
+    after_reset_cycles = reset_gap_cycles(reset_gap_ns, gap_cycles)
 
     # Everything that can refuse, refuses HERE - before a single QUA statement,
     # so a mis-registered chip costs no instrument time. An idle step is resolved
@@ -349,7 +356,8 @@ def build_program(
                         stark_operation=stark_operation,
                         tones=compensation,
                         gap_cycles=gap_cycles,
-                        stark_with_reset=stark_with_reset)
+                        stark_with_reset=stark_with_reset,
+                        after_reset_cycles=after_reset_cycles)
 
                 # Restore the resonant IFs before readout.
                 for qubit, _factor in compensation:
@@ -444,6 +452,10 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         "simulator, measured before the reset macro returned its flux line's frequency "
         "after the pulse and not since (a with_reset round has not been measured); "
         "operation_gap_ns has to be a multiple of 4 ns",
+        "reset_gap_ns replaces operation_gap_ns after the relay's reset alone and has "
+        "to be 0 or a multiple of 4 ns from 16 up (QUA's shortest wait); at 0 the next "
+        "round's first swap follows the reset (and the tones) directly, apart from the "
+        "program overhead above",
         "an idle step waits the longer of the control's and the coupler's copy of "
         "idle_reference_operation's pulse",
         "swap_coupler_flux is divided by the stored amplitude of the operation's coupler "
@@ -519,6 +531,7 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
             reset_max_attempts=reset_max_attempts(self),
             keep_shots=self.params.readout_mode == "shot",
             operation_gap_ns=int(self.params.operation_gap_ns),
+            reset_gap_ns=self.params.reset_gap_ns,
             stark_with_reset=_stark_with_reset(self.params.stark_timing),
             # the same flux-line join as the reset qubit's: scqo's chain_roles
             # has already refused a name that is not on the chain

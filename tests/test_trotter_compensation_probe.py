@@ -273,6 +273,36 @@ def test_stark_with_reset_drops_exactly_the_align_before_the_tones(live_chain):
     assert together[reset + 5].strip() == "align()"
 
 
+def test_the_scan_plays_the_chains_reset_gap(live_chain):
+    """The scan calibrates the round the chain runs, so the gap after the
+    relay's reset has to be the chain's here too: 0 removes that one wait, and
+    unset the scan is the program it was. The guard is the chain probe's own."""
+    from qm import generate_qua_script
+
+    config = live_chain.generate_config()
+
+    def lines(**overrides):
+        prog, _axes = build_program(**_live_kwargs(
+            live_chain, operation_gap_ns=20, stark_with_reset=True, **overrides))
+        return [ln for ln in generate_qua_script(prog, config).splitlines()
+                if "generated at" not in ln]
+
+    plain = lines()
+    assert lines(reset_gap_ns=None) == plain == lines(reset_gap_ns=20)
+
+    none = lines(reset_gap_ns=0)
+    assert len(plain) == len(none) + 1
+    at = next(i for i, (a, b) in enumerate(zip(plain, none)) if a != b)
+    assert plain[:at] + plain[at + 1:] == none
+    assert plain[at].strip().startswith("wait(5,") and '"q2.z"' in plain[at]
+    assert plain[at - 1].strip().startswith('update_frequency("q2.z", 0,')
+    # the fixed tone now follows the reset macro directly
+    assert 'play("stark"*amp(0.25), "q3.xy")' in none[at]
+
+    with pytest.raises(ValueError, match="reset_gap_ns must be 0 or a multiple of 4"):
+        build_program(**_kwargs(reset_gap_ns=12))
+
+
 def test_the_scan_plays_the_chains_init_reset(live_chain):
     """The scan calibrates the shot the chain runs, so a reset at the start of
     the shot has to be in both: the same block (the macro, the run's ring-down,

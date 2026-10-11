@@ -26,6 +26,12 @@ The gap stays the reset's in both: it lets a FLUX pulse settle before the next
 round's swap, and a tone on an xy line has nothing to settle. The tones of one
 round are concurrent with each other in both settings.
 
+THE GAP AFTER THE RESET can be set apart from the other two (scqo's
+``reset_gap_ns`` -> ``reset_gap_cycles`` here): it is the time between the
+relay's reset and the next round's first swap, and a run that asks whether that
+time matters must not move the gaps the swaps settle in. Unset, all three gaps
+are ``operation_gap_ns`` and the round is the program it was.
+
 Both chain probes (``qc_unidirectional_trotter``, ``qc_trotter_compensation``)
 accept ``operation="idle"`` on either of their two round steps. An idle step
 plays no pulse and waits instead, for exactly as long as that pair's swap would
@@ -50,7 +56,8 @@ from qm.qua import align
 from ._coupler_knob import find_coupler_pulse
 
 __all__ = ["chain_reset_qubits", "check_init_resets", "check_tones_clear_of_reset",
-           "idle_wait_cycles", "play_chain_round", "play_init_resets"]
+           "idle_wait_cycles", "play_chain_round", "play_init_resets",
+           "reset_gap_cycles"]
 
 #: QUA's floor for ``wait()``. A shorter wait is not a short wait -- it is a
 #: compile error naming an internal variable, which is how the xy-z delay shell
@@ -108,6 +115,22 @@ def idle_wait_cycles(pair, reference_operation: str) -> int:
             f"flux pulse, below QUA's {MIN_WAIT_CYCLES * 4} ns minimum wait, so "
             f"an 'idle' step on this pair cannot be expressed at all.")
     return cycles
+
+
+def reset_gap_cycles(reset_gap_ns: Optional[int], gap_cycles: int) -> int:
+    """Clock cycles a round idles after the relay's reset, or refuse BY NAME.
+
+    ``reset_gap_ns`` is scqo's setting of that one gap: None leaves it at the
+    round's common gap (``gap_cycles``, from ``operation_gap_ns``), 0 removes it,
+    and any other value has to be a wait QUA can play.
+    """
+    if reset_gap_ns is None:
+        return int(gap_cycles)
+    if reset_gap_ns != 0 and (reset_gap_ns < MIN_WAIT_CYCLES * 4 or reset_gap_ns % 4):
+        raise ValueError(
+            f"reset_gap_ns must be 0 or a multiple of 4 ns of at least "
+            f"{MIN_WAIT_CYCLES * 4} ns (QUA's shortest wait), got {reset_gap_ns!r}.")
+    return int(reset_gap_ns) // 4
 
 
 def check_tones_clear_of_reset(reset_qubit, toned: Iterable) -> None:
@@ -202,6 +225,7 @@ def play_chain_round(
     tones: Sequence[tuple],
     gap_cycles: int,
     stark_with_reset: bool,
+    after_reset_cycles: Optional[int] = None,
 ) -> None:
     """Emit ONE Trotter round: first step, second step, relay reset, stark tones.
 
@@ -218,6 +242,10 @@ def play_chain_round(
     scale may be a Python float or a QUA variable (the compensation scan's swept
     one). ``stark_with_reset`` picks where they go - see the module docstring.
     Ends with a global ``align()``.
+
+    ``gap_cycles`` idles after each of the three operations. ``after_reset_cycles``
+    replaces it after the relay's reset alone (``reset_gap_cycles`` resolves it
+    from scqo's ``reset_gap_ns``); None leaves all three alike.
     """
     if first_operation is None:
         first_pair.wait(idle_cycles["first_pair"])
@@ -234,8 +262,10 @@ def play_chain_round(
         second_pair.wait(gap_cycles)
     align()
     reset_qubit.macros[reset_operation].apply()
-    if gap_cycles > 0:
-        reset_qubit.wait(gap_cycles)
+    if after_reset_cycles is None:
+        after_reset_cycles = gap_cycles
+    if after_reset_cycles > 0:
+        reset_qubit.wait(after_reset_cycles)
     # The one statement stark_timing decides. With no tone there is nothing to
     # move, so the two settings stay the same program, statement for statement.
     if not (stark_with_reset and tones):
