@@ -29,9 +29,19 @@ counts, and every resolution has to go through the roster's membership/roles.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
+
+# The suite runs as a HUMAN, whoever launches it. An AI agent running pytest carries
+# its harness's session id in the environment, and scqo then treats every session a
+# test builds as that agent's: it reads the agent's selection file, refuses one that
+# has selected nothing, and stamps what it writes (SCQO scqo/agent.py). This repo has
+# no CI, so the local run is the only gate - and it must not take one path in an
+# agent's hands and another in a person's. Set at import: child processes copy
+# os.environ, and a wider-scoped fixture can run before a function-scoped one.
+os.environ["SCQO_AGENT"] = "none"
 
 
 @pytest.fixture(autouse=True)
