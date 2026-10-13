@@ -406,12 +406,6 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                     active_band = seg_band
 
 
-                # dfs = detuning relative to intermediate_frequency, as expected by
-                # build_program (qubit_spectroscopy.py: update_frequency(df + IF)).
-                # Read BEFORE setting RF_frequency so we capture the current IF.
-                nominal_if = int(round(primary_qubit.xy.intermediate_frequency))
-                dfs = (clipped_rf - clamped_lo_int - nominal_if).astype(np.int32)
-
                 # Synchronize target qubits to clamped_lo so base IF = 0 Hz
                 for target_name in targets:
                     target_q = machine.qubits[target_name]
@@ -448,6 +442,18 @@ class QMBroadbandQubitSpectroscopy(BroadbandQubitSpectroscopy):
                             idle_lo = getattr(getattr(q_obj.xy, "frequency_converter_up", None), "LO_frequency", None)
                         if idle_lo is not None:
                             q_obj.xy.RF_frequency = idle_lo
+
+                # dfs = detuning relative to the IF build_program ADDS
+                # (qubit_spectroscopy.py: update_frequency(df + xy.intermediate_frequency)).
+                # It reads that IF when the program is built, which is AFTER the
+                # moves above - so it is read here, after them, and is 0 for a
+                # target parked on its LO. Reading it BEFORE the move subtracted
+                # the IF the target happened to carry into the run (its stored
+                # drive frequency minus the port's LO): the whole first sub-band
+                # was then played that far from its label, at an IF outside
+                # [min_if, max_if], while the dataset kept the requested axis.
+                nominal_if = int(round(primary_qubit.xy.intermediate_frequency))
+                dfs = (clipped_rf - clamped_lo_int - nominal_if).astype(np.int32)
 
                 prog, sweep_axes = build_program(
                     machine,
