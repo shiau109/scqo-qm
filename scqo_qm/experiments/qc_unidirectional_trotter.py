@@ -33,7 +33,10 @@ Circuit per shot (for a swept Trotter-step count N):
      ``stark_with_reset`` the tones start together with the reset instead of
      after it (scqo's ``stark_timing="with_reset"``): a shorter round of the
      same circuit.
-  5. Restore the resonant IFs, then read out every measured qubit.
+  5. Restore the resonant IFs, then read out every measured qubit. With
+     ``bases`` (scqo's ``readout_bases``), first the setting's rotation:
+     ``-y90`` on each qubit read along x, ``x90`` along y (qubit_tomography's
+     convention), all at once, then one align.
 
 The macros are invoked BARE (``.apply()`` with no arguments), so each must be
 callable that way - amplitudes and pulses baked into the QUAM macro definition.
@@ -54,6 +57,19 @@ every shot (``state`` over ``(qubit, shot_idx, round_count)``), which is what
 makes the JOINT chain distribution reconstructable downstream; False averages on
 the FPGA into one population per round (``(qubit, round_count)``), which is
 cheaper on the wire and cannot answer joint questions.
+
+READ ALONG X AND Y. ``bases`` is one label per readout setting, one character
+per measured qubit (``z`` / ``x`` / ``y``). The settings are the INNERMOST loop
+(shots -> rounds -> setting), so each setting's shot follows the last one's and
+every setting sees the same drift; an ``if_`` chain picks the rotation and the
+streams gain a trailing ``basis`` axis. No frame is reset per shot: the prep and
+the rotation play on the same xy element, so the shot's absolute start time
+cancels from the phase they measure (what broke ``qc_n_swap_tomography`` was the
+RELATIVE phase of two elements), and the compensation tones' ``update_frequency``
+round trip is QUA's default ``keep_phase=False``, which leaves the element's
+phase coherent with the prep - the pattern ``qubit_stark_phase_echo`` plays
+(y90, a tone at a moved IF, the IF back, x90 / -y90). ``bases=None`` emits the
+program it always did, statement for statement.
 
 QM unidirectional-coupling Trotter chain for scqo -- supplies ``probe()``.
 
@@ -108,6 +124,39 @@ def _dedup_involved(measure_qubits, pairs, extra) -> List:
     return involved
 
 
+#: the rotation that brings each readout axis onto Z (None = nothing) - the
+#: convention of qubit_tomography and qc_n_swap_tomography
+PRE_ROTATION = {"z": None, "x": "-y90", "y": "x90"}
+
+
+def _check_bases(measure_qubits, bases) -> list:
+    """The basis labels as strings, refusing BY NAME, before any QUA, a label
+    that is not one of ``PRE_ROTATION``'s characters per measured qubit, and a
+    rotation whose xy operation a rotated qubit does not carry."""
+    labels = [str(label) for label in bases]
+    if not labels:
+        raise ValueError("bases=[] reads nothing; pass None to read every qubit along z.")
+    width = len(measure_qubits)
+    bad = [label for label in labels if len(label) != width or set(label) - set(PRE_ROTATION)]
+    if bad:
+        raise ValueError(
+            f"basis labels {bad} are not {width} characters of "
+            f"{''.join(PRE_ROTATION)} (one per measured qubit, in order).")
+    missing = sorted({
+        (qubit.name, PRE_ROTATION[axis])
+        for label in labels
+        for qubit, axis in zip(measure_qubits, label)
+        if PRE_ROTATION[axis] is not None and PRE_ROTATION[axis] not in qubit.xy.operations
+    })
+    if missing:
+        raise ValueError(
+            "the readout rotations need xy operations the qubits do not carry: "
+            + ", ".join(f"{name} {op!r}" for name, op in missing)
+            + ". Register them (x90 and -y90, as qubit_tomography plays them), or read "
+              "that qubit along z.")
+    return labels
+
+
 def _check_macro(holder, operation: str, what: str) -> None:
     """Refuse a missing bare-callable macro BY NAME, before any QUA is built."""
     macros = getattr(holder, "macros", {}) or {}
@@ -156,6 +205,9 @@ def build_program(
     # / init_reset_ringdown_ns). Empty = the shot as it always was.
     init_resets: Sequence = (),
     init_reset_ringdown_ns: int = 0,
+    # One label per readout setting, one z/x/y per measured qubit (scqo's
+    # readout_bases, resolved). None = every qubit along z, no basis axis.
+    bases: Optional[Sequence[str]] = None,
     simulate: bool = False,
 ):
     """Build the unidirectional-Trotter-chain QUA program.
@@ -203,6 +255,11 @@ def build_program(
     all starting together; each waits ``init_reset_ringdown_ns`` in place of its
     stored ring-down (``_chain_round.play_init_resets``). A qubit without the
     macro, or with a macro that is not a parametric reset, is refused by name.
+
+    ``bases`` reads some qubits along x or y (module docstring): a label per
+    setting, one character per measured qubit; the settings are the innermost
+    loop and ``sweep_axes`` gains a trailing ``basis`` axis. A rotated qubit
+    without the operation its rotation plays is refused by name.
     """
     measure_qubits = list(measure_qubits)
     num_qubits = len(measure_qubits)
@@ -249,6 +306,17 @@ def build_program(
     if stark_with_reset:
         check_tones_clear_of_reset(reset_qubit,
                                    [qubit for qubit, _factor in compensation])
+    rotations = []
+    if bases is not None:
+        bases = _check_bases(measure_qubits, bases)
+        # (setting index, [(qubit, operation), ...]) for each setting that
+        # rotates at least one qubit
+        for k, label in enumerate(bases):
+            plays = [(qubit, PRE_ROTATION[axis])
+                     for qubit, axis in zip(measure_qubits, label)
+                     if PRE_ROTATION[axis] is not None]
+            if plays:
+                rotations.append((k, plays))
     # The swap ANGLE knob, when a run sets it: the coupler pulse must exist and
     # be turnable (baked at zero it is not), and the port must be able to emit
     # the volts. A pair left at None plays its baked coupler amplitude and is
@@ -292,6 +360,8 @@ def build_program(
         axes["shot_idx"] = xr.DataArray(np.arange(num_shots))
     axes["round_count"] = xr.DataArray(
         rounds_array, attrs={"long_name": "Trotter steps", "units": ""})
+    if bases is not None:
+        axes["basis"] = xr.DataArray(bases)
     # Canonical scqo axis names in raw NESTING order, so _to_canonical takes its
     # name-based path (only `qubit` -> `target` is renamed) instead of matching
     # equal-sized axes positionally.
@@ -304,8 +374,80 @@ def build_program(
         I, I_st, Q, Q_st, n, n_st = machine.declare_qua_variables()
         r = declare(int)   # swept Trotter-step count (current value)
         rr = declare(int)  # inner round counter
+        # the readout setting, declared only when there are settings, so a run
+        # without them is the program it always was
+        b = declare(int) if bases is not None else None
         state = [declare(int) for _ in range(num_qubits)]
         state_st = [declare_stream() for _ in range(num_qubits)]
+
+        def one_shot():
+            """Reset, prep, N rounds, [rotation,] joint readout."""
+            # Initialization: thermalize / actively reset every involved qubit.
+            for qubit in involved:
+                qubit.reset(reset_type, simulate,
+                            max_attempts=reset_max_attempts)
+            align()
+
+            # The parametric reset at the start of the shot, where a run asks
+            # for one: it empties what the reset above left. Nothing at all
+            # when no qubit is named.
+            play_init_resets(init_resets, reset_operation,
+                             init_reset_ringdown_ns)
+
+            # State prep, once, resonant IF: concurrent across the prep
+            # qubits (each on its own xy line), then one align.
+            for qubit, operation in prep:
+                qubit.xy.play(operation)
+            align()
+
+            # Detune the compensated qubits so their tones shift rather than
+            # rotate. Outside the loop: nothing between prep and readout
+            # needs their resonant IF.
+            for qubit, _factor in compensation:
+                qubit.xy.update_frequency(stark_if[qubit.name])
+
+            # The Trotter step, N times. A dynamic loop bound on r means
+            # N=0 skips the body entirely (the prep-only baseline).
+            with for_(rr, 0, rr < r, rr + 1):
+                # One round, shared with the compensation scan. A pair named
+                # in swap_coupler_flux is driven at that coupler amplitude
+                # (the angle knob); one that is not plays bare.
+                play_chain_round(
+                    first_pair, second_pair, reset_qubit,
+                    first_operation=first_operation,
+                    second_operation=second_operation,
+                    idle_cycles=idle_cycles,
+                    first_swap_kwargs=first_swap_kwargs,
+                    second_swap_kwargs=second_swap_kwargs,
+                    reset_operation=reset_operation,
+                    stark_operation=stark_operation,
+                    tones=compensation,
+                    gap_cycles=gap_cycles,
+                    stark_with_reset=stark_with_reset,
+                    after_reset_cycles=after_reset_cycles)
+
+            # Restore the resonant IFs before readout. keep_phase=False (QUA's
+            # default) keeps each element's phase coherent with its prep.
+            for qubit, _factor in compensation:
+                qubit.xy.update_frequency(base_if[qubit.name])
+            align()
+
+            # The setting's rotation onto Z, every rotated qubit at once, at
+            # the resonant IF just restored. An if_/elif_ chain over the
+            # settings that rotate anything (an all-z setting plays nothing):
+            # generate_qua_script round-trips it exactly, a switch_ it does not.
+            if bases is not None:
+                for j, (k, plays) in enumerate(rotations):
+                    with (if_ if j == 0 else elif_)(b == k):
+                        for qubit, operation in plays:
+                            qubit.xy.play(operation)
+                align()
+
+            # Joint (multiplexed) readout of every measured qubit.
+            for i, qubit in enumerate(measure_qubits):
+                qubit.readout_state(state[i])
+                save(state[i], state_st[i])
+            align()
 
         # Initialize the QPU in terms of flux points for every involved element.
         for qubit in involved:
@@ -315,68 +457,25 @@ def build_program(
         with for_(n, 0, n < num_shots, n + 1):
             save(n, n_st)
             with for_(*from_array(r, rounds_array)):
-                # Initialization: thermalize / actively reset every involved qubit.
-                for qubit in involved:
-                    qubit.reset(reset_type, simulate,
-                                max_attempts=reset_max_attempts)
-                align()
-
-                # The parametric reset at the start of the shot, where a run asks
-                # for one: it empties what the reset above left. Nothing at all
-                # when no qubit is named.
-                play_init_resets(init_resets, reset_operation,
-                                 init_reset_ringdown_ns)
-
-                # State prep, once, resonant IF: concurrent across the prep
-                # qubits (each on its own xy line), then one align.
-                for qubit, operation in prep:
-                    qubit.xy.play(operation)
-                align()
-
-                # Detune the compensated qubits so their tones shift rather than
-                # rotate. Outside the loop: nothing between prep and readout
-                # needs their resonant IF.
-                for qubit, _factor in compensation:
-                    qubit.xy.update_frequency(stark_if[qubit.name])
-
-                # The Trotter step, N times. A dynamic loop bound on r means
-                # N=0 skips the body entirely (the prep-only baseline).
-                with for_(rr, 0, rr < r, rr + 1):
-                    # One round, shared with the compensation scan. A pair named
-                    # in swap_coupler_flux is driven at that coupler amplitude
-                    # (the angle knob); one that is not plays bare.
-                    play_chain_round(
-                        first_pair, second_pair, reset_qubit,
-                        first_operation=first_operation,
-                        second_operation=second_operation,
-                        idle_cycles=idle_cycles,
-                        first_swap_kwargs=first_swap_kwargs,
-                        second_swap_kwargs=second_swap_kwargs,
-                        reset_operation=reset_operation,
-                        stark_operation=stark_operation,
-                        tones=compensation,
-                        gap_cycles=gap_cycles,
-                        stark_with_reset=stark_with_reset,
-                        after_reset_cycles=after_reset_cycles)
-
-                # Restore the resonant IFs before readout.
-                for qubit, _factor in compensation:
-                    qubit.xy.update_frequency(base_if[qubit.name])
-                align()
-
-                # Joint (multiplexed) readout of every measured qubit.
-                for i, qubit in enumerate(measure_qubits):
-                    qubit.readout_state(state[i])
-                    save(state[i], state_st[i])
-                align()
+                if bases is None:
+                    one_shot()
+                else:
+                    # innermost: every setting of one round count back to back
+                    with for_(b, 0, b < len(bases), b + 1):
+                        one_shot()
 
         with stream_processing():
             n_st.save("n")
             for i in range(num_qubits):
-                # Inner buffer = the round axis; shot mode groups num_shots of
-                # them so the joint distribution stays reconstructable, average
-                # mode collapses them on the FPGA into one population per round.
-                stream = state_st[i].buffer(len(rounds_array))
+                # Inner buffer = the round axis (each round count holding one
+                # value per readout setting when there are settings); shot mode
+                # groups num_shots of them so the joint distribution stays
+                # reconstructable, average mode collapses them on the FPGA into
+                # one population per point.
+                stream = state_st[i]
+                if bases is not None:
+                    stream = stream.buffer(len(bases))
+                stream = stream.buffer(len(rounds_array))
                 if keep_shots:
                     stream = stream.buffer(num_shots)
                 else:
@@ -407,6 +506,7 @@ from scqo.experiments.qc_unidirectional_trotter import (
     STARK_WITH_RESET,
     chain_roles,
     pair_specs,
+    readout_basis_labels,
 )
 
 
@@ -468,6 +568,11 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         "macro. A qubit without that macro, or whose macro is not a parametric reset, "
         "is refused by name",
         "readout_mode=average averages on the instrument; shot keeps every shot",
+        "readout_bases plays -y90 (x) or x90 (y) on the rotated qubits right after the "
+        "intermediate frequencies are restored and before the readout; the settings are "
+        "the innermost loop. No frame or phase is reset per shot: the prep and the "
+        "rotation share one xy element, and update_frequency keeps its phase coherent "
+        "(keep_phase=False), as in qubit_stark_phase_echo. Not yet run on hardware",
     )
 
     #: Active reset is valid here: the readout condition is fixed for the whole
@@ -539,6 +644,9 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
                                       kind="flux")
                          for name in self.params.init_reset_qubits],
             init_reset_ringdown_ns=int(self.params.init_reset_ringdown_ns),
+            # one character per target in target order - the measure_qubits
+            # order above - or None for the program without rotations
+            bases=readout_basis_labels(self.params),
         )
 
     def reduce_raw(self, raw: xr.Dataset) -> xr.Dataset:

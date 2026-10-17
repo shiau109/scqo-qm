@@ -189,6 +189,22 @@ def test_init_resets_start_together_and_close_with_one_align(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "bases, message",
+    [
+        (["zzx", "zz"], "basis labels \\['zz'\\]"),
+        (["zzw"], "basis labels \\['zzw'\\]"),
+        ([], "reads nothing"),
+        # the stubs carry x180 and stark only: the rotation's operation is
+        # refused by name, per qubit
+        (["zzx", "yzz"], "q1 'x90', q3 '-y90'"),
+    ],
+)
+def test_readout_bases_are_refused_by_name_before_any_qua(bases, message):
+    with pytest.raises(ValueError, match=message):
+        build_program(**_kwargs(bases=bases))
+
+
 def test_reduce_raw_names_the_readout_form():
     """`state` means per-shot integer LEVELS, so only the FPGA-averaged stream
     is renamed to `population` — the contract accepts both, which is exactly why
@@ -526,6 +542,99 @@ def test_shot_and_average_modes_differ_only_in_the_stream(live_chain):
     assert (shot_text[:shot_text.index("stream_processing")]
             == avg_text[:avg_text.index("stream_processing")])
     assert ".average()" in avg_text and ".average()" not in shot_text
+
+
+def _needs_rotations(machine):
+    for name in CHAIN:
+        missing = [op for op in ("x90", "-y90", "y90")
+                   if op not in machine.qubits[name].xy.operations]
+        if missing:
+            pytest.skip(f"live {name} has no {missing} xy op(s)")
+
+
+def test_readout_bases_rotate_after_the_restore_and_before_the_readout(live_chain):
+    """The sink read along X and Y: the settings are the innermost loop, the
+    rotation plays at the resonant IF just restored, and the streams gain the
+    setting as their innermost buffer."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    _needs_rotations(machine)
+    prep = [(machine.qubits["q3"], "y90")]
+    prog, axes = build_program(**_live_kwargs(machine, prep=prep, bases=["zzx", "zzy"]))
+    assert list(axes) == ["qubit", "shot_idx", "round_count", "basis"]
+    assert list(axes["basis"].values) == ["zzx", "zzy"]
+
+    text = generate_qua_script(prog, machine.generate_config())
+    # the preview script is the program itself, not an approximation of it
+    assert "SERIALIZATION WAS NOT COMPLETE" not in text
+    body = text[text.index('play("y90", "q3.xy")'):text.index("stream_processing")]
+    # only the sink rotates: -y90 for x, x90 for y, each once, one per branch
+    assert body.count('play("-y90", "q3.xy")') == 1
+    assert body.count('play("x90", "q3.xy")') == 1
+    assert "-y90" not in body.replace('"-y90", "q3.xy"', "")
+    assert body.count("with if_(") == 1 and body.count("with elif_(") == 1
+    # after the last IF restore, before the first readout
+    rotation = body.index('play("-y90", "q3.xy")')
+    restores = [i for i in range(len(body)) if body.startswith('update_frequency("q3.xy"', i)]
+    assert restores and restores[-1] < rotation < body.index("measure(")
+    assert ".buffer(2).buffer(6).buffer(10)" in text.replace(" ", "")
+
+
+def test_readout_bases_leave_the_program_alone_without_settings(live_chain):
+    """bases=None is the program it always was: no setting variable, no switch,
+    no rotation. (The element order inside a QUAM align() follows Python's
+    string hashing, so the comparison is between two builds of ONE process.)"""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    config = machine.generate_config()
+    plain, _ = build_program(**_live_kwargs(machine))
+    explicit, _ = build_program(**_live_kwargs(machine, bases=None))
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    assert script(plain) == script(explicit)
+    assert "if_(" not in script(plain) and 'play("-y90"' not in script(plain)
+
+
+def test_an_all_z_setting_plays_no_rotation_branch(live_chain):
+    """A setting that rotates nothing has no branch: only the two that rotate
+    the sink are tested for."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    _needs_rotations(machine)
+    prog, _ = build_program(**_live_kwargs(machine, bases=["zzz", "zzx", "zzy"]))
+    text = generate_qua_script(prog, machine.generate_config())
+    assert "SERIALIZATION WAS NOT COMPLETE" not in text
+    assert text.count("with if_(") == 1 and text.count("with elif_(") == 1
+    assert ".buffer(3).buffer(6).buffer(10)" in text.replace(" ", "")
+
+
+def test_probe_hands_readout_bases_to_the_builder(live_chain):
+    """readout_bases' maps become one label per setting in TARGET order - the
+    order the builder's measured qubits are in."""
+    from qm import generate_qua_script
+
+    machine = live_chain
+    _needs_rotations(machine)
+    config = machine.generate_config()
+
+    def script(prog):
+        return "\n".join(ln for ln in generate_qua_script(prog, config).splitlines()
+                         if "generated at" not in ln)
+
+    _backend, exp = _live_experiment(
+        machine, readout_mode="shot", prep_operations={"q3": "y90"},
+        readout_bases=[{"q3": "x"}, {"q3": "y", "q1": "x"}])
+    from_probe, probe_axes = exp.probe()
+    direct, direct_axes = build_program(**_live_kwargs(
+        machine, prep=[(machine.qubits["q3"], "y90")], bases=["zzx", "xzy"]))
+    assert script(from_probe) == script(direct)
+    assert list(probe_axes["basis"].values) == ["zzx", "xzy"]
 
 
 def test_a_qubit_without_a_compensation_amp_gets_no_tone(live_chain):
