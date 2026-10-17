@@ -572,7 +572,9 @@ class QMQcUnidirectionalTrotter(QcUnidirectionalTrotter):
         "intermediate frequencies are restored and before the readout; the settings are "
         "the innermost loop. No frame or phase is reset per shot: the prep and the "
         "rotation share one xy element, and update_frequency keeps its phase coherent "
-        "(keep_phase=False), as in qubit_stark_phase_echo. Not yet run on hardware",
+        "(keep_phase=False), as in qubit_stark_phase_echo. Checked on 5Q4C 2026-10-17: q1 "
+        "with its tone, with a factor of 0 and with no tone kept the same coherence per "
+        "round, and the tone added only its Stark phase",
     )
 
     #: Active reset is valid here: the readout condition is fixed for the whole
