@@ -84,6 +84,25 @@ FIELD_BINDINGS: dict[str, dict[str, VendorBinding]] = {
                  "one measured). x90's length stays vendor fine print - it is a "
                  "per-gate value, not the tracked pi length. Qblox counterpart: "
                  "rxy.duration (s, no grid guard there)"),
+        "drive_freq_ef_hz": VendorBinding(
+            path="q.f_12", unit="Hz",
+            convert="absolute Hz; refused past +-400 MHz from the xy LO (one "
+                    "upconverter's instantaneous band), since the probe plays it "
+                    "as an IF off that LO",
+            note="QUAM's own 1->2 frequency field (null until measured). The "
+                 "1->2 probes play it on q.xy by update_frequency and restore "
+                 "the 0->1 IF after. q.anharmonicity is NOT written: it feeds the "
+                 "x180's DRAG shape, so moving it would reshape a calibrated pulse"),
+        "pi_amp_ef": VendorBinding(
+            path="q.xy.operations['EF_x180'].amplitude", unit="",
+            note="QUAM's own 1->2 pi pulse (the populate scripts create it on "
+                 "every transmon); a missing operation is an error on write and "
+                 "None on read. Its DRAG alpha stays as stored (0)"),
+        "pi_duration_ef_s": VendorBinding(
+            path="q.xy.operations['EF_x180'].length", unit="ns",
+            convert="seconds -> ns",
+            note="positive multiples of 4 ns only (REFUSED otherwise, as for "
+                 "pi_duration_s)"),
         "thermalization_time_s": VendorBinding(
             path="q.thermalization_time_ns", unit="ns",
             convert="seconds -> ns, ROUNDED to the 4 ns QUA wait grid (a policy "

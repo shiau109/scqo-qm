@@ -553,6 +553,31 @@ class QMDriveChannel(_QMChannelView, make_view_base("drive")):
     def drag_beta_x90(self, value: float) -> None:
         quam_fields.set_drag_beta(self._q, value, operation="x90")
 
+    # The 1->2 pulse: q.f_12 and the EF_x180 operation, QUAM's own homes for it.
+    @property
+    def drive_freq_ef_hz(self) -> float:
+        return quam_fields.get_drive_freq_ef(self._q)
+
+    @drive_freq_ef_hz.setter
+    def drive_freq_ef_hz(self, value: float) -> None:
+        quam_fields.set_drive_freq_ef(self._q, value)
+
+    @property
+    def pi_amp_ef(self) -> float:
+        return quam_fields.get_ef_amp(self._q)
+
+    @pi_amp_ef.setter
+    def pi_amp_ef(self, value: float) -> None:
+        quam_fields.set_ef_amp(self._q, value)
+
+    @property
+    def pi_duration_ef_s(self) -> float:
+        return quam_fields.get_ef_duration(self._q)
+
+    @pi_duration_ef_s.setter
+    def pi_duration_ef_s(self, value: float) -> None:
+        quam_fields.set_ef_duration(self._q, value)
+
     # Lives on the QUBIT, not on q.xy: the wait is the qubit's own relaxation,
     # and QUAM hangs thermalization off the transmon. The drive channel is the
     # neutral home because scqo knobs live on channels, never on modes.
@@ -734,6 +759,38 @@ class QMBorrowedDriveChannel(QMDriveChannel):
         raise NotImplementedError(
             f"{self.name}.thermalization_time_s belongs to the target itself, not to "
             f"a borrowed route to it")
+
+    # The 1->2 pulse is designed-only too (scqo's catalog): a borrowed route
+    # carries the 0->1 pulse it was adopted for, and the roster never gives it
+    # these fields. The properties exist because the view base declares them.
+    def _designed_only(self, field: str):
+        raise NotImplementedError(
+            f"{self.name}.{field} prepares the target's |2> through its own line, "
+            f"not through a borrowed route to it")
+
+    @property
+    def drive_freq_ef_hz(self) -> float:
+        self._designed_only("drive_freq_ef_hz")
+
+    @drive_freq_ef_hz.setter
+    def drive_freq_ef_hz(self, value: float) -> None:
+        self._designed_only("drive_freq_ef_hz")
+
+    @property
+    def pi_amp_ef(self) -> float:
+        self._designed_only("pi_amp_ef")
+
+    @pi_amp_ef.setter
+    def pi_amp_ef(self, value: float) -> None:
+        self._designed_only("pi_amp_ef")
+
+    @property
+    def pi_duration_ef_s(self) -> float:
+        self._designed_only("pi_duration_ef_s")
+
+    @pi_duration_ef_s.setter
+    def pi_duration_ef_s(self, value: float) -> None:
+        self._designed_only("pi_duration_ef_s")
 
 
 class QMFluxChannel(_QMChannelView, make_view_base("flux")):

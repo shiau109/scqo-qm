@@ -166,6 +166,56 @@ def test_saturation_amp_missing_operation_raises_keyerror():
         quam_fields.get_saturation_amp(q)
 
 
+# --------------------------------------------------------------------- the 1->2 pulse
+def _ef_qubit(*, f_12=None, lo=3.0e9):
+    q = _qubit(f_01=2.94e9, xy_rf=2.94e9)
+    q.f_12 = f_12
+    q.xy.LO_frequency = lo
+    q.xy.operations["EF_x180"] = SimpleNamespace(amplitude=0.18, length=16)
+    return q
+
+
+def test_drive_freq_ef_reads_none_until_measured_then_lands_on_f_12():
+    q = _ef_qubit()
+    assert quam_fields.get_drive_freq_ef(q) is None
+    quam_fields.set_drive_freq_ef(q, 2.70e9)
+    assert q.f_12 == pytest.approx(2.70e9) and isinstance(q.f_12, float)
+    assert quam_fields.get_drive_freq_ef(q) == pytest.approx(2.70e9)
+    # the 0->1 drive is untouched: the 1->2 frequency has its own home
+    assert q.f_01 == pytest.approx(2.94e9) and q.xy.RF_frequency == pytest.approx(2.94e9)
+
+
+def test_drive_freq_ef_past_one_upconverter_band_is_refused():
+    """The probe plays the 1->2 tone as an IF off the xy LO: 3.0 GHz - 0.459 GHz
+    is past the 400 MHz one upconverter plays."""
+    q = _ef_qubit()
+    with pytest.raises(ValueError, match="400 MHz"):
+        quam_fields.set_drive_freq_ef(q, 2.541e9)
+    assert q.f_12 is None
+
+
+def test_ef_amp_and_duration_roundtrip_on_the_ef_operation():
+    q = _ef_qubit()
+    assert quam_fields.get_ef_amp(q) == pytest.approx(0.18)
+    assert quam_fields.get_ef_duration(q) == pytest.approx(16e-9)
+    quam_fields.set_ef_amp(q, 0.323)
+    quam_fields.set_ef_duration(q, 120e-9)
+    assert q.xy.operations["EF_x180"].amplitude == pytest.approx(0.323)
+    assert q.xy.operations["EF_x180"].length == 120
+    # the x180 is untouched
+    assert q.xy.operations["x180"].amplitude == pytest.approx(0.2)
+    with pytest.raises(ValueError):
+        quam_fields.set_ef_duration(q, 122e-9)  # off the 4 ns grid
+
+
+def test_ef_knobs_without_an_ef_operation_read_none_and_refuse_a_write():
+    q = _qubit()
+    assert quam_fields.get_ef_amp(q) is None
+    assert quam_fields.get_ef_duration(q) is None
+    with pytest.raises(KeyError, match="EF_x180"):
+        quam_fields.set_ef_amp(q, 0.3)
+
+
 # ------------------------------------------------------- readout duration / window
 class _ReadoutPulse:
     """QUAM ReadoutPulse stand-in with REAL reference semantics: attribute reads

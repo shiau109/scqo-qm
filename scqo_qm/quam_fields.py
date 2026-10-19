@@ -21,7 +21,10 @@ entity owns each is in scqo_qm/backend/fieldmap.py, keyed by channel KIND)
                               where they differ)
     pi_amp                <-> q.xy.operations['x180'].amplitude
     pi_duration_s         <-> q.xy.operations['x180'].length (s <-> ns, 4 ns grid)
-    drive_amp             <-> q.xy.operations['saturation'].amplitude
+    drive_freq_ef_hz      <-> q.f_12 (absolute Hz; within EF_IF_MAX_HZ of the xy LO)
+    pi_amp_ef             <-> q.xy.operations['EF_x180'].amplitude
+    pi_duration_ef_s      <-> q.xy.operations['EF_x180'].length (s <-> ns, 4 ns grid)
+    drive_amp            <-> q.xy.operations['saturation'].amplitude
     readout_duration_s    <-> q.resonator.operations['readout'].length (s <-> ns)
     readout_integration_s <-> ...operations['readout'].integration_weights
                               (window w -> [(1, w), (0, length - w)]; default ref when w == length)
@@ -996,6 +999,98 @@ def _set_op_amp(ops: Any, name: str, value: float) -> None:
         return
     if hasattr(op, "amplitude"):
         op.amplitude = value
+
+
+# ------------------------------------------------------------------ the 1->2 pulse
+#: The operation that drives the 1->2 transition: QUAM's own name for it (the
+#: quam_builder populate scripts create it on every transmon). Played after the
+#: x180, it prepares |2>.
+EF_OPERATION = "EF_x180"
+
+
+#: How far from the xy LO the 1->2 pulse may sit: the instantaneous bandwidth of
+#: one upconverter, half of the ~800 MHz sub-band either side (the MW-FEM's DUC;
+#: the Octave's IF window is the same 400 MHz). Wider than the repo's MAX_IF_HZ
+#: convention for the 0->1 drives on purpose: the 1->2 line sits an
+#: anharmonicity below a 0->1 drive that may already be far from the LO.
+EF_IF_MAX_HZ = 400.0e6
+
+
+def get_drive_freq_ef(qubit: Any):
+    """The 1->2 drive frequency, absolute Hz, from ``q.f_12``; None while nothing
+    has measured it (QUAM's default)."""
+    f12 = getattr(qubit, "f_12", None)
+    return None if f12 is None else float(f12)
+
+
+def set_drive_freq_ef(qubit: Any, value: float) -> None:
+    """Write the 1->2 drive frequency to ``q.f_12`` (absolute Hz).
+
+    Refused when the drive line cannot play it: the probe reaches it as an IF
+    off the xy upconverter's LO, and one upconverter plays only
+    ``EF_IF_MAX_HZ`` either side of its LO."""
+    if not hasattr(qubit, "f_12"):
+        raise NotImplementedError(
+            f"{getattr(qubit, 'name', qubit)}: this qubit's QUAM class has no f_12 "
+            f"field to hold the 1->2 drive frequency")
+    value = float(value)
+    lo = getattr(getattr(qubit, "xy", None), "LO_frequency", None)
+    if lo is not None and abs(value - float(lo)) > EF_IF_MAX_HZ:
+        raise ValueError(
+            f"{getattr(qubit, 'name', qubit)}.drive_freq_ef_hz={value / 1e9:.6g} GHz lies "
+            f"{(value - float(lo)) / 1e6:+.0f} MHz from the xy LO ({float(lo) / 1e9:.6g} "
+            f"GHz), past the +-{EF_IF_MAX_HZ / 1e6:.0f} MHz one upconverter plays")
+    qubit.f_12 = value
+
+
+def _ef_op(qubit: Any):
+    """The 1->2 operation, or None when the qubit's xy carries none."""
+    ops = getattr(getattr(qubit, "xy", None), "operations", None)
+    if ops is None:
+        return None
+    try:
+        op = ops[EF_OPERATION]
+    except (KeyError, TypeError):
+        return None
+    return None if isinstance(op, str) else op
+
+
+def _require_ef_op(qubit: Any, field: str):
+    op = _ef_op(qubit)
+    if op is None:
+        raise KeyError(
+            f"{getattr(qubit, 'name', qubit)}.{field}: the qubit's xy has no "
+            f"{EF_OPERATION!r} operation to hold it - add one to its state.json "
+            f"(a DragCosinePulse like x180_DragCosine, alpha 0)")
+    if _field_is_reference(op, "amplitude" if field == "pi_amp_ef" else "length"):
+        raise ValueError(
+            f"{getattr(qubit, 'name', qubit)}.{field}: {EF_OPERATION} holds a QUAM "
+            f"reference there, not a value of its own - replace it with a literal "
+            f"before calibrating the 1->2 pulse")
+    return op
+
+
+def get_ef_amp(qubit: Any):
+    op = _ef_op(qubit)
+    return None if op is None else float(op.amplitude)
+
+
+def set_ef_amp(qubit: Any, value: float) -> None:
+    _require_ef_op(qubit, "pi_amp_ef").amplitude = float(value)
+
+
+def get_ef_duration(qubit: Any):
+    """The 1->2 pulse length in SECONDS (QUAM stores ns); / 1e9 as in
+    :func:`get_pi_duration`."""
+    op = _ef_op(qubit)
+    return None if op is None else float(op.length) / 1e9
+
+
+def set_ef_duration(qubit: Any, value: float) -> None:
+    """Write the 1->2 pulse length (seconds, multiple of 4 ns; refused off-grid
+    for the reason :func:`set_pi_duration` gives)."""
+    ns = _grid_ns(value, "pi_duration_ef_s")
+    _require_ef_op(qubit, "pi_duration_ef_s").length = int(ns)
 
 
 # ------------------------------------------------------------------ saturation (spec) drive

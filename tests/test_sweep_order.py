@@ -69,6 +69,11 @@ SMALL = {"num_averages": 10, "num_shots": 100, "num_amp_points": 5,
          # the crosstalk map has no default source line; q1's z line stands in
          "source_line": "z_q1", "num_source_flux_points": 3}
 
+#: a carrier whose DEFAULT window this tree cannot play: the 1->2 search starts
+#: 400 MHz below the 0->1 drive, past what q4's xy upconverter reaches from its
+#: -104 MHz 0->1 IF (the probe refuses that by name), so it is narrowed here
+PER_EXPERIMENT = {"qubit_spectroscopy_ef": {"start_drive_detuning_hz": -250e6}}
+
 QM_PROBES = sorted(e["name"] for e in catalog()
                    if get(e["name"]).__module__.startswith("scqo_qm."))
 
@@ -104,7 +109,8 @@ def _params(name, start, end, *, descending):
     cls = get(name)
     fields = set(cls.Parameters.model_fields)
     base = cls.Parameters(targets=[TARGET],
-                          **{k: v for k, v in SMALL.items() if k in fields})
+                          **{k: v for k, v in SMALL.items() if k in fields},
+                          **PER_EXPERIMENT.get(name, {}))
     low, high = sorted((getattr(base, start), getattr(base, end)))
     first, last = (high, low) if descending else (low, high)
     return base.model_copy(update={start: first, end: last})

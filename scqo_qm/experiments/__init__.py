@@ -59,6 +59,7 @@ from . import qubit_relaxation_flux_pulse  # noqa: F401  (import side effect: @r
 from . import qubit_resonator_stark  # noqa: F401  (import side effect: @register)
 from . import qubit_spectroscopy  # noqa: F401  (import side effect: @register)
 from . import qubit_spectroscopy_cryoscope  # noqa: F401  (import side effect: @register)
+from . import qubit_spectroscopy_ef  # noqa: F401  (import side effect: @register)
 from . import qubit_sqrb  # noqa: F401  (import side effect: @register)
 from . import qubit_stark_phase_echo  # noqa: F401  (import side effect: @register)
 from . import qubit_t1_ade  # noqa: F401  (import side effect: @register)
