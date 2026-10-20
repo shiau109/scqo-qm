@@ -74,6 +74,17 @@ SMALL = {"num_averages": 10, "num_shots": 100, "num_amp_points": 5,
 #: -104 MHz 0->1 IF (the probe refuses that by name), so it is narrowed here
 PER_EXPERIMENT = {"qubit_spectroscopy_ef": {"start_drive_detuning_hz": -250e6}}
 
+
+def _with_f_12(machine):
+    """The 1->2 power Rabi plays at q.f_12, which the repo tree leaves unmeasured
+    (the probe refuses that by name): one inside the xy upconverter's band."""
+    q = machine.qubits[TARGET]
+    q.f_12 = float(q.f_01) - 210e6
+
+
+#: a carrier that needs device state the repo tree does not carry
+TREE_SETUP = {"qubit_power_rabi_ef": _with_f_12}
+
 QM_PROBES = sorted(e["name"] for e in catalog()
                    if get(e["name"]).__module__.startswith("scqo_qm."))
 
@@ -119,6 +130,8 @@ def _params(name, start, end, *, descending):
 def _script(machine, live_roster, config, name, params):
     from qm import generate_qua_script
 
+    if name in TREE_SETUP:
+        TREE_SETUP[name](machine)
     backend = QMBackend(machine, roster=live_roster)
     exp = get(name)(backend, params)
     exp.device = recording_device(backend, live_roster)
