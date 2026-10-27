@@ -405,6 +405,21 @@ VENDOR_ONLY_COMMON: dict[str, VendorOnly] = {
             "pulse's length only)",
         edit="edit state.json directly when a chip wants a different x90 "
              "envelope - nothing governs this one"),
+    "x180_shape": VendorOnly(
+        path="q.xy.operations['x180'] (and x90, -x90, y180, y90, -y90)", unit="",
+        kind="candidate",
+        doc="the ENVELOPE the gates play: each gate name is a QUAM #-reference "
+            "to a per-shape node (chipA: '#./x180_DragCosine', an x180_Square "
+            "family beside it). scqo's pi_amp / pi_amp_x90 / drag_beta / "
+            "pi_duration_s writes land on the *_DragCosine nodes, so only the "
+            "cosine is governed today - a shared concept awaiting a neutral "
+            "field (SCQO BACKLOG F30)",
+        coupled=("pi_amp", "pi_amp_x90", "drag_beta"),
+        edit="re-point all six references together in state.json with no "
+             "session live, then re-run qubit_power_rabi; a non-DragCosine "
+             "family is not written by the governed knobs until F30 lands",
+        counterpart="element.rxy.shape ('cosine' = this DragCosine, or the "
+                    "vendor 'gaussian')"),
     "drag_alpha": VendorOnly(
         path="q.xy.operations['<gate>_DragCosine'].alpha", unit="", kind="realizer",
         doc="PER-GATE DRAG coefficient (chipA: x180 -0.94, x90 -0.50). The x180 "
